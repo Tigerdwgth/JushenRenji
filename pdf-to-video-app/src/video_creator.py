@@ -1,44 +1,42 @@
 import dashscope
-from dashscope.audio.tts import SpeechSynthesizer
+from dashscope.audio.tts_v2 import *
 from moviepy import *
 from PIL import Image
 import numpy as np
 import re
 
 class VideoCreator:
-    def __init__(self, images, text):
+    def __init__(self, images, text, video_clips=None):
         self.images = images
         self.text = text
-        self.texts=[]
-        self.time=[]
-        self.texts_starts=[]
-        self.audioclips=[]
-        self.video=None
+        self.video_clips = video_clips or []
+        self.texts = []
+        self.time = []
+        self.texts_starts = []
+        self.audioclips = []
+        self.video = None
         print("VideoCreator实例已创建")
-    def videocaption(self, subtitle_list):
-        # input:
-        #   src_mp4: the path of wait-to-dispose video
-        #   dst_mp4: the path of after-dispose video
-        #	dottemp--字幕列表['text1','text2','text3',...]
-        
-        #	加载视频
-        
-        position = 'bottom'	#	显示位置，自行设置
-        
+
+    def videocaption(self, subtitle_list):        
         txts = []
         for si,sentence in enumerate(subtitle_list):
-            txt = (TextClip(text=sentence, 
-                            font_size=30,
-                            size=(1900, 40),
-                            font=r'F:\PaperReadingAgent\font\SourceHanSans-Bold.ttc',
-                            text_align='center',
-                            color='white',
-                            stroke_color='black',
-                            duration=self.time[si],
-                            )
-                )
-        
-            txts.append(txt)
+            #一行最多10个字
+            sentence_segs=[sentence[i:i+20] for i in range(0,len(sentence),20)]
+            duration=self.time[si]/len(sentence_segs)
+            for seg in sentence_segs:
+                txt = (TextClip(text=seg, 
+                                font_size=80,
+                                size=(1920, 1080),
+                                font=r'F:\PaperReadingAgent\font\SIMHEI.TTF',
+                                text_align='center',
+                                vertical_align='bottom',
+                                color='white',
+                                stroke_color='black',
+                                stroke_width=2,
+                                duration=duration,
+                                )
+                    )
+                txts.append(txt)
         # connect the text clips
         subtitles = concatenate_videoclips(txts)
         # 合成字幕
@@ -53,15 +51,16 @@ class VideoCreator:
         print("开始生成摘要的语音")
         #按中英文句号分割sentences = re.split(r'[。！？]', text)
         # self.texts=self.text.split('。')
-        self.texts=re.split(r'[。！,.，？]', self.text)
+        self.texts=re.split(r'[。！，？,.*\n\s:：]', self.text)
         #计算每句话的时间
         #合成每句话的音频
+        model ="cosyvoice-v1"
+        voice = "longxiaochun"
         audio_start=0
         tmp_texts=[]
+        ss=SpeechSynthesizer(model=model, voice=voice)
         for idx,text in enumerate(self.texts):
-            summary_audio = SpeechSynthesizer.call(model='sambert-zhichu-v1',
-                                              text=text,
-                                              sample_rate=48000)
+            summary_audio = ss.call(text=text)
             #save audio
             if summary_audio.get_audio_data() is not None:
                 tmp_texts.append(text)
@@ -79,7 +78,7 @@ class VideoCreator:
         print("合成总音频文件")
         summary_audio_clip = concatenate_audioclips(self.audioclips)
         combined_audio = summary_audio_clip
-        duration_per_pic = combined_audio.duration / len(self.images)
+        duration_per_pic = (combined_audio.duration) / len(self.images)   
         print(f"每张图片持续时间: {duration_per_pic} 秒")
         
         target_size = (1920, 1080)
@@ -87,6 +86,17 @@ class VideoCreator:
         # 创建视频剪辑
         print("开始创建视频剪辑")
         clips = []
+                # 处理视频片段
+        if self.video_clips:
+            print("处理视频片段")
+            for idx, video_clip in enumerate(self.video_clips):
+                # 调整视频尺寸以匹配目标尺寸
+                video_clip = video_clip.resized(width=1920, height=1080)
+                clips.append(video_clip)
+                print(f"添加第 {idx + 1} 个视频片段")
+            duration_per_pic = (combined_audio.duration-sum([clips[i].duration for i in range(len(clips))])
+                                ) / len(self.images)       
+        # 处理图片
         for idx, img in enumerate(self.images):
             print(f"处理第 {idx + 1}/{len(self.images)} 张图片")
             
@@ -113,6 +123,8 @@ class VideoCreator:
             clip = ImageClip(img_array).with_duration(duration_per_pic)
             clips.append(clip)
             print(f"第 {idx + 1} 张图片转换为视频片段")
+        
+
         
         # 合并所有剪辑
         print("合并所有视频剪辑")
