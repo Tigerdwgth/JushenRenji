@@ -22,9 +22,8 @@ class VideoCreator:
         for si,sentence in enumerate(subtitle_list):
             #一行最多10个字
             sentence_segs=[sentence[i:i+20] for i in range(0,len(sentence),20)]
-            duration=self.time[si]/len(sentence_segs)
-            for seg in sentence_segs:
-                txt = (TextClip(text=seg, 
+            sentence_segs='\n'.join(sentence_segs)
+            txts.append(TextClip(text=sentence_segs,
                                 font_size=80,
                                 size=(1920, 1080),
                                 font=r'F:\PaperReadingAgent\font\SIMHEI.TTF',
@@ -33,10 +32,11 @@ class VideoCreator:
                                 color='white',
                                 stroke_color='black',
                                 stroke_width=2,
-                                duration=duration,
+                                duration=self.time[si]
                                 )
-                    )
-                txts.append(txt)
+            )
+
+            
         # connect the text clips
         subtitles = concatenate_videoclips(txts)
         # 合成字幕
@@ -51,27 +51,34 @@ class VideoCreator:
         print("开始生成摘要的语音")
         #按中英文句号分割sentences = re.split(r'[。！？]', text)
         # self.texts=self.text.split('。')
-        self.texts=re.split(r'[。！，？,.*\n\s:：]', self.text)
+        self.texts=re.split(r'[。！，？,.*\n:：]', self.text)
         #计算每句话的时间
         #合成每句话的音频
         model ="cosyvoice-v1"
         voice = "longxiaochun"
         audio_start=0
         tmp_texts=[]
-        ss=SpeechSynthesizer(model=model, voice=voice)
+        
         for idx,text in enumerate(self.texts):
+            if not text:
+                continue
+            ss=SpeechSynthesizer(model=model, voice=voice)
             summary_audio = ss.call(text=text)
+            print('[Metric] requestId: {}'.format(
+                    ss.get_last_request_id()))
             #save audio
-            if summary_audio.get_audio_data() is not None:
+            try:
+                print(f"保存第{idx}段音频{len(summary_audio)},content:{text}")
                 tmp_texts.append(text)
                 with open(f'./cache/summary{idx}.wav', 'wb') as f:
-                    f.write(summary_audio.get_audio_data())
+                    f.write(summary_audio)
                 self.audioclips.append(AudioFileClip(f'./cache/summary{idx}.wav'))
                 self.time.append(self.audioclips[-1].duration)
                 self.texts_starts.append(audio_start)
                 audio_start+=self.audioclips[-1].duration
-            else:
-                print("没有音频数据可保存")
+            except Exception as e:
+                print(f"保存音频出错{e}")
+                # print("没有音频数据可保存")
         self.texts=tmp_texts
         # 加载音频文件
         
