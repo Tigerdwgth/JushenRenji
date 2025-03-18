@@ -49,7 +49,7 @@ class VideoCreator:
 
     def create_video(self, output_file):
         print("开始生成摘要的语音")
-        #按中英文句号分割sentences = re.split(r'[。！？]', text)
+        #按中英文句号分割sentences = re.split(r'[。！#？]', text)
         # self.texts=self.text.split('。')
         self.texts=re.split(r'[。！，？,.*\n:：]', self.text)
         #计算每句话的时间

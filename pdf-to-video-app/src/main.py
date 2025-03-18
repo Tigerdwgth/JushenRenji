@@ -56,7 +56,7 @@ def generate_title(text):
     response = client.chat.completions.create(
         model=model,
         messages=[
-            {"role": "system", "content": "You are a helpful assistant,为讲解视频生成一个简介易懂明了吸引人的标题，仅输出标题不输出其他内容，禁止输出多余内容，与标点符号，不要标题加引号。"},
+            {"role": "system", "content": "You are a helpful assistant,为讲解视频生成一个简介易懂明了吸引人的中文标题，仅输出标题不输出其他内容，禁止输出多余内容，与标点符号，不要标题加引号。"},
             {"role": "user", "content": text}
         ]
     )

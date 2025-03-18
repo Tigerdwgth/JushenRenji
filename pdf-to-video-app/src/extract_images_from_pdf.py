@@ -27,7 +27,7 @@ def extract_images_from_pdf(pdf_path,store_path='./pic/'):
             figure_table_counter+=1
             print(f"Figure {figure_table_counter} found on page {i+1}")
         # print(figure)
-            img=figure.image.viz()
+            img=figure.image.viz(show_cells=False,show_layouts=False,scaled_width=1920)
             img=Image.fromarray(img)
         #save img
             img.save(os.path.join(store_path,f'{figure_table_counter}.png'))
@@ -35,7 +35,7 @@ def extract_images_from_pdf(pdf_path,store_path='./pic/'):
             figure_table_counter+=1
             print(f"Table {figure_table_counter} found on page {i+1}")
             print(table)
-            img=table.image.viz(show_cells=False,show_layouts=False)
+            img=table.image.viz(show_cells=False,show_layouts=False,scaled_width=1920)
             img=Image.fromarray(img)
             img.save(os.path.join(store_path,f'{figure_table_counter}.png'))
 
