@@ -24,7 +24,7 @@ class VideoCreator:
             sentence_segs=[sentence[i:i+20] for i in range(0,len(sentence),20)]
             sentence_segs='\n'.join(sentence_segs)
             txts.append(TextClip(text=sentence_segs,
-                                font_size=80,
+                                font_size=60,
                                 size=(1920, 1080),
                                 font=r'F:\PaperReadingAgent\font\SIMHEI.TTF',
                                 text_align='center',
@@ -47,7 +47,7 @@ class VideoCreator:
 
 
 
-    def create_video(self, output_file):
+    def create_video(self, output_filename):
         print("开始生成摘要的语音")
         #按中英文句号分割sentences = re.split(r'[。！#？]', text)
         # self.texts=self.text.split('。')
@@ -63,9 +63,12 @@ class VideoCreator:
             if not text:
                 continue
             ss=SpeechSynthesizer(model=model, voice=voice)
-            summary_audio = ss.call(text=text)
-            print('[Metric] requestId: {}'.format(
+            try:
+                summary_audio = ss.call(text=text)
+                print('[Metric] requestId: {}'.format(
                     ss.get_last_request_id()))
+            except Exception as e:
+                print(f"合成音频出错{e}")
             #save audio
             try:
                 print(f"保存第{idx}段音频{len(summary_audio)},content:{text}")
@@ -143,8 +146,9 @@ class VideoCreator:
         print("视频剪辑合并完成")
         
         # 导出视频
-        print(f"导出视频到 {output_file}")
-        self.video.write_videofile(output_file, fps=24, codec='libx264', preset='medium')
+        print(f"导出视频到 {output_filename}")
+        self.video.write_videofile(output_filename, fps=24, codec='libx264', preset='medium')
+        
         print("视频导出完成")
         
-        return output_file
+        return output_filename

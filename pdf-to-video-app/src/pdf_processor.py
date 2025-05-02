@@ -29,5 +29,5 @@ class PDFProcessor:
         print("文本提取完成")
         return text
 
-    def extract_images(self):
-        extract_images_from_pdf(self.pdf_path)
+    def extract_images(self,cnt=None):
+        extract_images_from_pdf(self.pdf_path,cnt=cnt)
