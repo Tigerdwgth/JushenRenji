@@ -16,58 +16,64 @@ from concurrent.futures import ThreadPoolExecutor
 import shutil
 import re
 import datetime
+import logging
 
 from llm_agent import *
 
+# 配置日志记录
+logging.basicConfig(
+    filename='app.log',
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 
 def run_pdf_to_video_pipeline(paper=None,pdf_file_path=None,demowebsite=None,en_title="",prefix=""):
-    # full pipeline of 具身人机
-    print("开始程序")
+    logging.info("开始程序")
     # 输入PDF文件路径
     if not pdf_file_path:
         pdf_file_path, demowebsite = get_inputs()
     # 如果是网络路径，下载到本地
     pdf_file_path = download_if_remote(pdf_file_path)
-    print("文件存在，开始处理PDF")
+    logging.info("文件存在，开始处理PDF")
     # 创建PDF处理器实例
     pdf_processor = PDFProcessor(pdf_file_path)
     # 提取文本和图片
-    print("提取PDF文本")
+    logging.info("提取PDF文本")
     text = pdf_processor.extract_text()
     images = process_pdf_images(pdf_processor)
     
-    print(f"提取到 {len(images)} 张图片")
+    logging.info(f"提取到 {len(images)} 张图片")
     # 利用正则表达式过滤其中的网址,并访问网址直接下载视频
     try:
         if len(demowebsite)<=0:
             demowebsite=get_paper_demo_website(text[:5000])
-            print(f"获取到的网址为{demowebsite}")
+            logging.info(f"获取到的网址为{demowebsite}")
         else:
             download_videos_from_url(demowebsite)
     except Exception as e:
-        print(f"发生错误: { e}")
-    print("发现视频网址，尝试获取视频") 
+        logging.error(f"发生错误: { e}")
+    logging.info("发现视频网址，尝试获取视频") 
     videos=glob.glob('./pic/*.mp4')
     videos = [VideoFileClip(video) for video in videos]
-    print(f"提取到 {len(videos)} 个视频")
+    logging.info(f"提取到 {len(videos)} 个视频")
     # 生成摘要
-    print("生成摘要")
+    logging.info("生成摘要")
     title, summary = call_llm(text)
     
     # 创建视频
-    print("开始创建视频")
+    logging.info("开始创建视频")
     video_creator = VideoCreator(images, summary,videos)
     save_path = f"./output/{title}.mp4"
     video_path = video_creator.create_video(save_path)
     generate_cover('./pic/1.png', title, video_path.replace(".mp4",".png"))
-    print(f"视频已成功创建，路径为: {video_path}")
+    logging.info(f"视频已成功创建，路径为: {video_path}")
     #convert to absolute path
     video_path = os.path.abspath(video_path)
     # 上传到B站
     
     upload_video_to_bilibili(video_path, title, "人工智能,具身智能,机器人,模仿学习,VLA,具身,机械臂,计算机视觉", en_title, generate_video_proceedings(str(paper)) if paper else prefix)
-    print("视频上传成功！")
-    print("程序结束")
+    logging.info("视频上传成功！")
+    logging.info("程序结束")
 
 def call_llm(text):
     with ThreadPoolExecutor() as executor:
@@ -76,9 +82,9 @@ def call_llm(text):
         title = future_title.result()
         summary = future_summary.result()
     if summary:
-        print("成功生成摘要")
+        logging.info("成功生成摘要")
     else:
-        print("摘要为空")
+        logging.warning("摘要为空")
     return title,summary
 
 def call_llm_multithread(list_of_func_and_params):
@@ -89,7 +95,7 @@ def call_llm_multithread(list_of_func_and_params):
 
 def get_inputs():
     pdf_file_path = input("请输入PDF文件的路径: ")
-    print(f"输入的PDF路径: {pdf_file_path}")
+    logging.info(f"输入的PDF路径: {pdf_file_path}")
     demowebsite=input("请输入视频网址:")
     return pdf_file_path,demowebsite
 def process_pdf_images(pdf_processor,cnt=None):
@@ -108,7 +114,7 @@ def process_pdf_images(pdf_processor,cnt=None):
     - images (list): 包含提取图片的列表，每个图片为 `PIL.Image` 对象。
     """
     if not MANUALLY_EXTRACT_IMAGES:
-        print("提取PDF图片")
+        logging.info("提取PDF图片")
         #remove all the images in the pic folder
         files = glob.glob('./pic/*')
         for f in files:
@@ -139,7 +145,7 @@ def download_if_remote(pdf_file_path):
     - 下载的文件会保存为 `./cache/cached_pdf.pdf`。
     """
     if pdf_file_path.startswith("http"):
-        print("下载PDF文件")
+        logging.info("下载PDF文件")
         def download_file(url):
             """
             下载远程文件并保存到本地。
@@ -159,10 +165,10 @@ def download_if_remote(pdf_file_path):
                 f.write(response.content)
             return file_name
         pdf_file_path = download_file(pdf_file_path)
-        print(f"下载完成，保存路径: {pdf_file_path}")
+        logging.info(f"下载完成，保存路径: {pdf_file_path}")
     # 检查文件是否存在
     if not os.path.isfile(pdf_file_path):
-        print("文件不存在，请检查路径。")
+        logging.info("文件不存在，请检查路径。")
         return
     return pdf_file_path
 
@@ -175,48 +181,48 @@ def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().str
     - max_papers (int): 每日报告的最大论文数量，默认是 5。
     - output_filename (str): 生成的视频文件路径，默认是 "./output/daily_summary.mp4"。
     """
-    print("开始生成每日 arXiv 论文总结视频")
+    logging.info("开始生成每日 arXiv 论文总结视频")
     # 获取最新的论文
     papers = get_paper_from_arxiv(query=query)
-    print(f"找到 {len(papers)} 篇论文,正在筛选...")
+    logging.info(f"找到 {len(papers)} 篇论文,正在筛选...")
     # 过滤日期
     papers = filter_papers_by_date(papers, date)
     # 如果没有找到符合条件的论文，返回
     cn_titles=[]
     if not papers:
-        print("未找到符合条件的论文")
+        logging.warning("未找到符合条件的论文")
         return
     else:
-        print(f"找到 {len(papers)} 篇论文")
-        print(f"日期: {date}")
-        print([paper.title for paper in papers])  # 使用 Paper 数据类的属性
+        logging.info(f"找到 {len(papers)} 篇论文")
+        logging.info(f"日期: {date}")
+        logging.info([paper.title for paper in papers])  # 使用 Paper 数据类的属性
 
     # 初始化视频片段列表
     video_clips = []
     origin_titles = []
 
     for idx, paper in enumerate(papers):
-        print(f"处理第 {idx + 1} 篇论文: {paper.title}")
+        logging.info(f"处理第 {idx + 1} 篇论文: {paper.title}")
         # 下载论文 PDF
         pdf_url = paper.link.replace("abs", "pdf").split('v1')[0]
         pdf_file_path = download_if_remote(pdf_url)
         if not pdf_file_path:
-            print(f"无法下载或找到 PDF 文件: {pdf_url}")
+            logging.warning(f"无法下载或找到 PDF 文件: {pdf_url}")
             continue
         
         # 创建 PDF 处理器实例
         pdf_processor = PDFProcessor(pdf_file_path)
         
         # 提取文本和图片
-        print("提取 PDF 文本和图片")
+        logging.info("提取 PDF 文本和图片")
         text = pdf_processor.extract_text()
         images = process_pdf_images(pdf_processor, cnt=2 if long_or_short == "short" else None)
         if not images:
-            print(f"未提取到图片，跳过论文: {paper.title}")
+            logging.warning(f"未提取到图片，跳过论文: {paper.title}")
             continue
         
         # 生成简短摘要
-        print("生成摘要")
+        logging.info("生成摘要")
         origin_title, short_summary,cn_title = call_llm_multithread(
             [
                 (generate_origin_title, text[:200]),
@@ -227,7 +233,7 @@ def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().str
         )
         cn_titles.append(cn_title)
         if not short_summary:
-            print(f"摘要生成失败，跳过论文: {paper.title}")
+            logging.warning(f"摘要生成失败，跳过论文: {paper.title}")
             continue
         
         if len(papers) > 1:
@@ -240,7 +246,7 @@ def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().str
         
         
         # 为当前论文创建独立视频
-        print(f"创建第 {idx + 1} 篇论文的视频片段")
+        logging.info(f"创建第 {idx + 1} 篇论文的视频片段")
         video_creator = VideoCreator(images, short_summary)
         part_save_path = f"./output/part_{idx + 1}.mp4"
         
@@ -250,10 +256,10 @@ def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().str
     
     # 合并所有论文的视频片段
     if not video_clips:
-        print("未生成任何视频片段，无法创建日报视频")
+        logging.warning("未生成任何视频片段，无法创建日报视频")
         return
     
-    print("合并所有论文的视频片段")
+    logging.info("合并所有论文的视频片段")
     # 将论文的标题以字幕的形式，显示在每段视频的最上方
     title_clips = [
         TextClip(text=_.title, font_size=25,
@@ -272,7 +278,7 @@ def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().str
     
     # 转换为绝对路径
     final_video_path = os.path.abspath(output_filename)
-    print(f"日报视频已成功生成，路径为: {final_video_path}")
+    logging.info(f"日报视频已成功生成，路径为: {final_video_path}")
     return final_video_path, origin_titles,cn_titles
 
 if __name__ == "__main__":
@@ -288,16 +294,20 @@ if __name__ == "__main__":
         #print(f"处理第{idx}篇论文")
         #print(papers[idx])
         #run_pdf_to_video_pipeline(papers[idx],url,demo_urls[idx],en_title[idx],papers[idx]['prefix'] if 'prefix' in papers[idx] else title_prefix)
-    
-    today=datetime.datetime.now()
-    yesterday=today-datetime.timedelta(days=400)
-    yesterday=yesterday.strftime(r"%Y-%m-%d")
-    today=today.strftime(r"%Y-%m-%d")
-    print(f"今天是{today},昨天是{yesterday}")
-    # path,titles=generate_daily_arxiv_summary(query='cs.RO',max_papers=100,date=str(yesterday))
-    path,titles,cn_titles=generate_daily_arxiv_summary(query="""Towards Autonomous Micromobility through Scalable Urban Simulation""",max_papers=1,date=str(yesterday),long_or_short="long")
-    if len(titles)==1:
-        upload_video_to_bilibili(path,cn_titles[0],"人工智能,具身智能,机器人,模仿学习,强化学习,自动驾驶,具身人机", titles)
-    else:
-        upload_video_to_bilibili(path, "Arxiv具身日报"+str(today), "人工智能,具身智能,机器人,模仿学习,强化学习,自动驾驶,具身人机", titles)
-    
+    try:
+        today=datetime.datetime.now()
+        yesterday=today-datetime.timedelta(days=400)
+        yesterday=yesterday.strftime(r"%Y-%m-%d")
+        today=today.strftime(r"%Y-%m-%d")
+        logging.info(f"今天是{today},昨天是{yesterday}")
+        # path,titles=generate_daily_arxiv_summary(query='cs.RO',max_papers=100,date=str(yesterday))
+        path,titles,cn_titles=generate_daily_arxiv_summary(query="""LogisticsVLN: Vision-Language Navigation For Low-Altitude Terminal Delivery Based on Agentic UAVs""",max_papers=1,date=str(yesterday),long_or_short="long")
+        if len(titles)==1:
+            upload_video_to_bilibili(path,cn_titles[0],"人工智能,具身智能,机器人,模仿学习,强化学习,自动驾驶,具身人机", titles)
+        else:
+            upload_video_to_bilibili(path, "Arxiv具身日报"+str(today), "人工智能,具身智能,机器人,模仿学习,强化学习,自动驾驶,具身人机", titles)
+    except Exception as e:
+        logging.error(f"程序运行时发生异常: {e}")
+    finally:
+        logging.info("程序结束")
+        logging.shutdown()

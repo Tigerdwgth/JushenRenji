@@ -4,6 +4,14 @@ from moviepy import *
 from PIL import Image
 import numpy as np
 import re
+import logging
+
+# 配置日志记录
+logging.basicConfig(
+    filename='app.log',
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 
 class VideoCreator:
     def __init__(self, images, text, video_clips=None):
@@ -15,7 +23,7 @@ class VideoCreator:
         self.texts_starts = []
         self.audioclips = []
         self.video = None
-        print("VideoCreator实例已创建")
+        logging.info("VideoCreator实例已创建")
 
     def videocaption(self, subtitle_list):        
         txts = []
@@ -48,7 +56,7 @@ class VideoCreator:
 
 
     def create_video(self, output_filename):
-        print("开始生成摘要的语音")
+        logging.info("开始生成摘要的语音")
         #按中英文句号分割sentences = re.split(r'[。！#？]', text)
         # self.texts=self.text.split('。')
         self.texts=re.split(r'[。！，？,.*\n:：]', self.text)
@@ -65,14 +73,13 @@ class VideoCreator:
             ss=SpeechSynthesizer(model=model, voice=voice)
             try:
                 summary_audio = ss.call(text=text)
-                print('[Metric] requestId: {}'.format(
+                logging.info(f"保存第{idx}段音频, 内容: {text}")
+                logging.info('[Metric] requestId: {}'.format(
                     ss.get_last_request_id()))
             except Exception as e:
-                print(f"合成音频出错{e}")
+                logging.error(f"合成音频出错: {e}")
             #save audio
             try:
-                print(f"保存第{idx}段音频{len(summary_audio)},content:{text}")
-                tmp_texts.append(text)
                 with open(f'./cache/summary{idx}.wav', 'wb') as f:
                     f.write(summary_audio)
                 self.audioclips.append(AudioFileClip(f'./cache/summary{idx}.wav'))
@@ -80,41 +87,41 @@ class VideoCreator:
                 self.texts_starts.append(audio_start)
                 audio_start+=self.audioclips[-1].duration
             except Exception as e:
-                print(f"保存音频出错{e}")
+                logging.error(f"保存音频出错: {e}")
                 # print("没有音频数据可保存")
         self.texts=tmp_texts
         # 加载音频文件
         
-        print("合成总音频文件")
+        logging.info("合成总音频文件")
         summary_audio_clip = concatenate_audioclips(self.audioclips)
         combined_audio = summary_audio_clip
         duration_per_pic = (combined_audio.duration) / len(self.images)   
-        print(f"每张图片持续时间: {duration_per_pic} 秒")
+        logging.info(f"每张图片持续时间: {duration_per_pic} 秒")
         
         target_size = (1920, 1080)
         
         # 创建视频剪辑
-        print("开始创建视频剪辑")
+        logging.info("开始创建视频剪辑")
         clips = []
                 # 处理视频片段
         if self.video_clips:
-            print("处理视频片段")
+            logging.info("处理视频片段")
             for idx, video_clip in enumerate(self.video_clips):
                 # 调整视频尺寸以匹配目标尺寸
                 video_clip = video_clip.resized(width=1920, height=1080)
                 clips.append(video_clip)
-                print(f"添加第 {idx + 1} 个视频片段")
+                logging.info(f"添加第 {idx + 1} 个视频片段")
             duration_per_pic = (combined_audio.duration-sum([clips[i].duration for i in range(len(clips))])
                                 ) / len(self.images)       
         # 处理图片
         for idx, img in enumerate(self.images):
-            print(f"处理第 {idx + 1}/{len(self.images)} 张图片")
+            logging.info(f"处理第 {idx + 1}/{len(self.images)} 张图片")
             
             # 计算放大后的尺寸
             scale_factor = min(target_size[0] / img.width, target_size[1] / img.height)
             new_size = (int(img.width * scale_factor), int(img.height * scale_factor))
             img = img.resize(new_size, Image.Resampling.LANCZOS)
-            print(f"放大图片到: {img.size}")
+            logging.info(f"放大图片到: {img.size}")
             
             # 创建一个新的背景图像
             new_img = Image.new("RGB", target_size, (0, 0, 0))
@@ -125,30 +132,30 @@ class VideoCreator:
             # 将缩放后的图像粘贴到背景图像上
             new_img.paste(img, paste_position)
             img = new_img
-            print(f"添加黑边后的图片大小: {img.size}")
+            logging.info(f"添加黑边后的图片大小: {img.size}")
             # 转换为numpy数组
             img_array = np.array(img)
             
             # 创建视频片段
             clip = ImageClip(img_array).with_duration(duration_per_pic)
             clips.append(clip)
-            print(f"第 {idx + 1} 张图片转换为视频片段")
+            logging.info(f"第 {idx + 1} 张图片转换为视频片段")
         
 
         
         # 合并所有剪辑
-        print("合并所有视频剪辑")
+        logging.info("合并所有视频剪辑")
         self.video = concatenate_videoclips(clips, method="compose")
         self.video = self.video.with_audio(combined_audio)
         #添加字幕
         self.videocaption(self.texts)
         
-        print("视频剪辑合并完成")
+        logging.info("视频剪辑合并完成")
         
         # 导出视频
-        print(f"导出视频到 {output_filename}")
+        logging.info(f"导出视频到 {output_filename}")
         self.video.write_videofile(output_filename, fps=24, codec='libx264', preset='medium')
         
-        print("视频导出完成")
+        logging.info("视频导出完成")
         
         return output_filename

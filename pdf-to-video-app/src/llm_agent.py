@@ -5,6 +5,15 @@ import json
 import sys
 import shutil
 from openai import OpenAI
+import logging
+
+# 配置日志记录
+logging.basicConfig(
+    filename='app.log',
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+
 def initialize_agent():
     """
     初始化代理程序。
@@ -32,7 +41,7 @@ def initialize_agent():
         url = 'https://api.deepseek.com/v1'
 # 初始化 OpenAI 客户端
 # 验证当前使用的Python路径
-    print(f"当前Python解释器路径: {sys.executable}")
+    logging.info(f"当前Python解释器路径: {sys.executable}")
     if MODEL == 'qwen':
         client = OpenAI(
         api_key=dashscope.api_key,
@@ -91,7 +100,7 @@ def get_paper_demo_website(text):
     """
     ret= create_chat_completion(prompt, text)
     
-    print(f"{ret}")
+    logging.info(f"{ret}")
     # 使用正则表达式提取 JSON 部分
     json_re = re.compile(r"\{.*?\}", re.DOTALL)  # 非贪婪匹配，支持换行符
     match = json_re.search(ret)
@@ -100,19 +109,19 @@ def get_paper_demo_website(text):
         try:
             # 尝试解析 JSON
             parsed_json = json.loads(json_str)
-            print("解析成功:", parsed_json)
+            logging.info("解析成功: %s", parsed_json)
         except json.JSONDecodeError as e:
-            print("JSON 解析失败:", e)
+            logging.error("JSON 解析失败: %s", e)
             return ''
     else:
-        print("未找到 JSON 内容")
+        logging.warning("未找到 JSON 内容")
     if parsed_json['state'] not in ['0','1',0,1]:
-        print('state值不在范围内')
+        logging.warning('state值不在范围内')
         return ''
     if parsed_json['state']=='1'or parsed_json['state']==1:
         return parsed_json['url']
     else:
-        print("未找到视频网址")
+        logging.warning("未找到视频网址")
         return ''
 
 def create_chat_completion(prompt, user_content=None):

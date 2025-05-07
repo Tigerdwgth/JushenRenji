@@ -4,6 +4,7 @@ from matplotlib import pyplot as plt
 import os  # 添加导入 os 模块
 import tempfile  # 添加导入 tempfile 模块
 from PIL import Image  # 添加导入 PIL 库
+import logging  # 添加导入 logging 模块
 # import garbgage collection
 import gc
 # 将 Tesseract-OCR 添加到 PATH 环境变量
@@ -15,6 +16,14 @@ temp_dir = tempfile.gettempdir()
 os.environ['TMPDIR'] = temp_dir
 os.environ['TEMP'] = temp_dir
 os.environ['TMP'] = temp_dir
+
+# 配置日志记录
+logging.basicConfig(
+    filename='app.log',
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+
 # PDF_PATH = r".\mambaout.pdf"   
 # extract_images_from_pdf(PDF_PATH) 
 def extract_images_from_pdf(pdf_path,cnt=None,store_path='./pic/'):  
@@ -27,29 +36,28 @@ def extract_images_from_pdf(pdf_path,cnt=None,store_path='./pic/'):
     for i, page in enumerate(doc):
         for figure in page.figures:
             figure_table_counter+=1
-            print(f"Figure {figure_table_counter} found on page {i+1}")
-        # print(figure)
+            logging.info(f"Figure {figure_table_counter} found on page {i+1}")
             img=figure.image.viz(show_cells=False,show_layouts=False,scaled_width=1920)
             img=Image.fromarray(img)
         #save img
             img.save(os.path.join(store_path,f'{figure_table_counter}.png'))
         for table in page.tables:
             figure_table_counter+=1
-            print(f"Table {figure_table_counter} found on page {i+1}")
-            print(table)
+            logging.info(f"Table {figure_table_counter} found on page {i+1}")
+            logging.info(table)
             img=table.image.viz(show_cells=False,show_layouts=False,scaled_width=1920)
             img=Image.fromarray(img)
             img.save(os.path.join(store_path,f'{figure_table_counter}.png'))
         if cnt and figure_table_counter>=cnt:
             break
         gc.collect()
-        
-        
-
-        
-        
 
 
-        
-        
+
+
+
+
+
+
+
 
