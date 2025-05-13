@@ -6,13 +6,28 @@ import sys
 import shutil
 from openai import OpenAI
 import logging
-
+import yaml
+from config import *
 # 配置日志记录
 logging.basicConfig(
     filename='app.log',
-    level=logging.INFO,
+    level=logging.DEBUG,  # 修改为 DEBUG 级别
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
+
+def load_config():
+    """
+    从 config.yaml 文件中加载配置。
+    return: dict，包含配置项。
+    """
+    config_path = "config.yaml"
+    if not os.path.exists(config_path):
+        raise FileNotFoundError(f"配置文件 {config_path} 不存在，请创建该文件并添加所需配置。")
+    
+    with open(config_path, "r", encoding="utf-8") as file:
+        config = yaml.safe_load(file)
+    return config
+
 
 def initialize_agent():
     """
@@ -30,9 +45,16 @@ def initialize_agent():
     # 设置模型名称
     MODEL = 'qwen'
     MODEL = 'deepseek'
+    config = load_config()
+    # OPENAI_API_KEY"
+    # "DASHSCOPE_API_KEY"
+    if API_KEYS['openai'] is None:
+        raise ValueError("请在 config.yaml或环境变量 中设置 OPENAI_API_KEY")
+    if API_KEYS['dashscope'] is None:
+        raise ValueError("请在 config.yaml或环境变量 中设置 DASHSCOPE_API_KEY")
+    api_key = config.get("api_key")
+    dashscope.api_key = config.get("dashscope_api_key")
 
-    api_key = "sk-d55ef632e4dd4863931f15ed102cc9bd"
-    dashscope.api_key = "sk-265cf380a7214e4eb2b296187c32d758"
     if MODEL == 'qwen':
         model = 'qwen-max'
         url = 'https://dashscope.aliyuncs.com/compatible-mode/v1'

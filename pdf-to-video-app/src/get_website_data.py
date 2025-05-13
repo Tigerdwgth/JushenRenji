@@ -2,6 +2,14 @@ import os
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
+import logging
+
+# 配置日志记录
+logging.basicConfig(
+    filename='app.log',
+    level=logging.DEBUG,  # 修改为 DEBUG 级别
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 
 def download_videos_from_url(url, download_folder='./pic'):
     # 创建下载文件夹

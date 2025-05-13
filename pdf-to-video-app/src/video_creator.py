@@ -9,7 +9,7 @@ import logging
 # 配置日志记录
 logging.basicConfig(
     filename='app.log',
-    level=logging.INFO,
+    level=logging.DEBUG,  # 修改为 DEBUG 级别
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 

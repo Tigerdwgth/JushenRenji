@@ -20,7 +20,7 @@ os.environ['TMP'] = temp_dir
 # 配置日志记录
 logging.basicConfig(
     filename='app.log',
-    level=logging.INFO,
+    level=logging.DEBUG,  # 修改为 DEBUG 级别
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 
@@ -31,7 +31,7 @@ def extract_images_from_pdf(pdf_path,cnt=None,store_path='./pic/'):
     df = analyzer.analyze(path = pdf_path)  # setting up pipeline
     df.reset_state()   # Trigger some initialization
     doc = iter(df)
-# 遍历 PDF 中的每一页
+    # 遍历 PDF 中的每一页
     figure_table_counter=0
     for i, page in enumerate(doc):
         for figure in page.figures:

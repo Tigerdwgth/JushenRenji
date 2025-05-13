@@ -22,10 +22,13 @@ from llm_agent import *
 
 # 配置日志记录
 logging.basicConfig(
-    filename='app.log',
-    level=logging.INFO,
+    level=logging.DEBUG,  # 修改为 DEBUG 级别
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
+file_handler = logging.FileHandler('app.log', encoding='utf-8')
+file_handler.setLevel(logging.DEBUG)
+file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+logging.getLogger().addHandler(file_handler)
 
 def run_pdf_to_video_pipeline(paper=None,pdf_file_path=None,demowebsite=None,en_title="",prefix=""):
     logging.info("开始程序")
@@ -301,7 +304,7 @@ if __name__ == "__main__":
         today=today.strftime(r"%Y-%m-%d")
         logging.info(f"今天是{today},昨天是{yesterday}")
         # path,titles=generate_daily_arxiv_summary(query='cs.RO',max_papers=100,date=str(yesterday))
-        path,titles,cn_titles=generate_daily_arxiv_summary(query="""LogisticsVLN: Vision-Language Navigation For Low-Altitude Terminal Delivery Based on Agentic UAVs""",max_papers=1,date=str(yesterday),long_or_short="long")
+        path,titles,cn_titles=generate_daily_arxiv_summary(query="""Triply-Hierarchical Diffusion Policy for Visuomotor Learning""",max_papers=1,date=str(yesterday),long_or_short="long")
         if len(titles)==1:
             upload_video_to_bilibili(path,cn_titles[0],"人工智能,具身智能,机器人,模仿学习,强化学习,自动驾驶,具身人机", titles)
         else:
