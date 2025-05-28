@@ -311,6 +311,7 @@ if __name__ == "__main__":
             upload_video_to_bilibili(path, "Arxiv具身日报"+str(today), "人工智能,具身智能,机器人,模仿学习,强化学习,自动驾驶,具身人机", titles)
     except Exception as e:
         logging.error(f"程序运行时发生异常: {e}")
+        raise e
     finally:
         logging.info("程序结束")
         logging.shutdown()

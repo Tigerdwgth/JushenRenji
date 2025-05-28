@@ -48,12 +48,26 @@ def initialize_agent():
     config = load_config()
     # OPENAI_API_KEY"
     # "DASHSCOPE_API_KEY"
-    if API_KEYS['openai'] is None:
-        raise ValueError("请在 config.yaml或环境变量 中设置 OPENAI_API_KEY")
-    if API_KEYS['dashscope'] is None:
-        raise ValueError("请在 config.yaml或环境变量 中设置 DASHSCOPE_API_KEY")
-    api_key = config.get("api_key")
-    dashscope.api_key = config.get("dashscope_api_key")
+    # print(config)
+    try:
+        # 从配置文件或环境变量中获取 OpenAI API 密钥
+        if API_KEYS.get('openai'):
+            api_key = API_KEYS['openai']
+        elif config.get("llm_api_key"):
+            api_key = config["llm_api_key"]
+        else:
+            raise ValueError("请在 config.yaml 或环境变量中设置 OPENAI_API_KEY")
+
+        # 从配置文件或环境变量中获取 DashScope API 密钥
+        if API_KEYS.get('dashscope'):
+            dashscope.api_key = API_KEYS['dashscope']
+        elif config.get("dashscope_api_key"):
+            dashscope.api_key = config["dashscope_api_key"]
+        else:
+            raise ValueError("请在 config.yaml 或环境变量中设置 DASHSCOPE_API_KEY")
+    except KeyError as e:
+            print(f"配置文件中缺少必要的键: {e}")
+        
 
     if MODEL == 'qwen':
         model = 'qwen-max'

@@ -46,7 +46,11 @@ class VideoCreator:
 
             
         # connect the text clips
+        for txt in txts:
+            # print(size)
+            print(txt.size)
         subtitles = concatenate_videoclips(txts)
+
         # 合成字幕
         self.video = CompositeVideoClip([self.video, subtitles])
         # 合成音频
