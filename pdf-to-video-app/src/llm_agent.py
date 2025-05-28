@@ -77,7 +77,7 @@ def initialize_agent():
         url = 'https://api.deepseek.com/v1'
 # 初始化 OpenAI 客户端
 # 验证当前使用的Python路径
-    logging.info(f"当前Python解释器路径: {sys.executable}")
+    logging.info("当前Python解释器路径: %s", sys.executable)
     if MODEL == 'qwen':
         client = OpenAI(
         api_key=dashscope.api_key,
@@ -152,7 +152,7 @@ def get_paper_demo_website(text):
     else:
         logging.warning("未找到 JSON 内容")
     if parsed_json['state'] not in ['0','1',0,1]:
-        logging.warning('state值不在范围内')
+        logging.warning("state值不在范围内")
         return ''
     if parsed_json['state']=='1'or parsed_json['state']==1:
         return parsed_json['url']

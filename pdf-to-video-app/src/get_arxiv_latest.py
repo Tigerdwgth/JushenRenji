@@ -123,7 +123,7 @@ def convert_date_format(date_str):
         # 如果所有格式都无法解析，返回原始字符串
         return date_str
     except Exception as e:
-        print(f"日期解析失败: {date_str}, 错误: {e}")
+        print("日期解析失败: %s, 错误: %s", date_str, e)
         return date_str
 
 #filter by date

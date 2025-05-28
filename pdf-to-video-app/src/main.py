@@ -45,20 +45,20 @@ def run_pdf_to_video_pipeline(paper=None,pdf_file_path=None,demowebsite=None,en_
     text = pdf_processor.extract_text()
     images = process_pdf_images(pdf_processor)
     
-    logging.info(f"提取到 {len(images)} 张图片")
+    logging.info("提取到 %d 张图片", len(images))
     # 利用正则表达式过滤其中的网址,并访问网址直接下载视频
     try:
         if len(demowebsite)<=0:
             demowebsite=get_paper_demo_website(text[:5000])
-            logging.info(f"获取到的网址为{demowebsite}")
+            logging.info("获取到的网址为%s", demowebsite)
         else:
             download_videos_from_url(demowebsite)
     except Exception as e:
-        logging.error(f"发生错误: { e}")
+        logging.error("发生错误: %s", e)
     logging.info("发现视频网址，尝试获取视频") 
     videos=glob.glob('./pic/*.mp4')
     videos = [VideoFileClip(video) for video in videos]
-    logging.info(f"提取到 {len(videos)} 个视频")
+    logging.info("提取到 %d 个视频", len(videos))
     # 生成摘要
     logging.info("生成摘要")
     title, summary = call_llm(text)
@@ -69,7 +69,7 @@ def run_pdf_to_video_pipeline(paper=None,pdf_file_path=None,demowebsite=None,en_
     save_path = f"./output/{title}.mp4"
     video_path = video_creator.create_video(save_path)
     generate_cover('./pic/1.png', title, video_path.replace(".mp4",".png"))
-    logging.info(f"视频已成功创建，路径为: {video_path}")
+    logging.info("视频已成功创建，路径为: %s", video_path)
     #convert to absolute path
     video_path = os.path.abspath(video_path)
     # 上传到B站
@@ -302,7 +302,7 @@ if __name__ == "__main__":
         yesterday=today-datetime.timedelta(days=400)
         yesterday=yesterday.strftime(r"%Y-%m-%d")
         today=today.strftime(r"%Y-%m-%d")
-        logging.info(f"今天是{today},昨天是{yesterday}")
+        logging.info("今天是%s,昨天是%s", today, yesterday)
         # path,titles=generate_daily_arxiv_summary(query='cs.RO',max_papers=100,date=str(yesterday))
         path,titles,cn_titles=generate_daily_arxiv_summary(query="""Triply-Hierarchical Diffusion Policy for Visuomotor Learning""",max_papers=1,date=str(yesterday),long_or_short="long")
         if len(titles)==1:
@@ -310,7 +310,7 @@ if __name__ == "__main__":
         else:
             upload_video_to_bilibili(path, "Arxiv具身日报"+str(today), "人工智能,具身智能,机器人,模仿学习,强化学习,自动驾驶,具身人机", titles)
     except Exception as e:
-        logging.error(f"程序运行时发生异常: {e}")
+        logging.error("程序运行时发生异常: %s", e)
         raise e
     finally:
         logging.info("程序结束")

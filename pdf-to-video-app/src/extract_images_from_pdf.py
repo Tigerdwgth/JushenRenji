@@ -8,7 +8,7 @@ import tempfile  # 添加导入 tempfile 模块
 from PIL import Image  # 添加导入 PIL 库
 import logging  # 添加导入 logging 模块
 # import garbgage collection
-import gc
+
 # 将 Tesseract-OCR 添加到 PATH 环境变量
 os.environ['PATH'] += r";C:\Program Files\Tesseract-OCR"
 # 设置 TESSDATA_PREFIX 环境变量
@@ -55,17 +55,17 @@ def extract_images_from_pdf(pdf_path, cnt=None, store_path='./pic/'):
             for table in page.tables:
                 try:
                     figure_table_counter += 1
-                    logging.info(f"Table {figure_table_counter} found on page {i+1}")
+                    logging.info("Table %d found on page %d", figure_table_counter, i + 1)
                     img = table.image.viz(show_cells=False, show_layouts=False, scaled_width=1920)
                     img = Image.fromarray(img)
                     img.save(os.path.join(store_path, f'{figure_table_counter}.png'))
                 except Exception as e:
-                    logging.error(f"Error processing table {figure_table_counter} on page {i+1}: {e}", exc_info=True)
+                    logging.error("Error processing table %d on page %d: %s", figure_table_counter, i + 1, e, exc_info=True)
 
             if cnt and figure_table_counter >= cnt:
                 break
     except Exception as e:
-        logging.error(f"Error in extract_images_from_pdf: {e}", exc_info=True)
+        logging.error("Error in extract_images_from_pdf: %s", e, exc_info=True)
 
 
 
