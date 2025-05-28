@@ -29,6 +29,8 @@ pdf-to-video-app
 ## 使用说明
 
 1. 确保已安装所有依赖项。可以通过以下命令安装：
+   安装tesseract-ocr，参照
+   <https://tesseract-ocr.github.io/tessdoc/Installation.html>
    ```
    conda create -n paperagent python=3.10
    pip install -r requirements.txt
@@ -48,10 +50,10 @@ pdf-to-video-app
 
 1. 运行应用程序：
    ```
-   python src/main.py <path_to_pdf>
+   python src/main.py
    ```
 
-   替换 `<path_to_pdf>` 为你的PDF文件路径。
+   <!-- 替换 `<path_to_pdf>` 为你的PDF文件路径。 -->
 
 ## 贡献
 
