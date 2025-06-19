@@ -1,5 +1,5 @@
 from PIL import Image, ImageDraw, ImageFont
-
+from config import *
 def generate_cover(cover_pic, cover_title, output_path="./pic/cover.png"):
     """
     输入图片路径与标题，生成封面图片
@@ -22,7 +22,7 @@ def generate_cover(cover_pic, cover_title, output_path="./pic/cover.png"):
         draw = ImageDraw.Draw(background)
         
         # 设置字体（需要确保字体文件路径正确）
-        font_path = r"F:\PaperReadingAgent\font\SIMHEI.TTF"  # 替换为实际字体路径
+        font_path = FONT_PATH  # 替换为实际字体路径
         font_size = 90
         font = ImageFont.truetype(font_path, font_size)
         
@@ -45,14 +45,16 @@ def generate_cover(cover_pic, cover_title, output_path="./pic/cover.png"):
         draw.text((text_x, text_y), cover_title, fill="yellow", font=font)
         
         # 保存生成的封面图片
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)  # 确保目录存在
         background.save(output_path)
         print(f"封面图片已成功保存到: {output_path}")
     except Exception as e:
         print(f"生成封面图片时出错: {e}")
+        raise e
 
 if __name__ == "__main__":
     # 示例
-    cover_pic = r"F:\PaperReadingAgent\output\daily_summary.png"
+    cover_pic = r"/home/jdh/Projects/VlogCutter/JushenRenji/pic/1.png"
     cover_title = "封面上传功能测sfsfsdfsdfsdfs试"
-    output_path = r"F:\PaperReadingAgent\output\cover.png"
+    output_path = r"./output/cover.png"
     generate_cover(cover_pic, cover_title, output_path)

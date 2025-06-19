@@ -8,6 +8,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 import pickle
 import os
+# os.environ['DISPLAY']= ':0'  # 设置 DISPLAY 环境变量
 import pyautogui as pag
 
 pag.FAILSAFE = False

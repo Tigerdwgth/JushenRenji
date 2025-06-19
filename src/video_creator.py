@@ -5,6 +5,7 @@ from PIL import Image
 import numpy as np
 import re
 import logging
+from config import *
 
 # 配置日志记录
 logging.basicConfig(
@@ -27,6 +28,9 @@ class VideoCreator:
 
     def videocaption(self, subtitle_list):        
         txts = []
+        # print(len(self.texts)
+        #       , len(self.time))
+        logging.info("字幕数量：%d 音频数量：%d" % (len(subtitle_list), len(self.time)))
         for si,sentence in enumerate(subtitle_list):
             #一行最多10个字
             sentence_segs=[sentence[i:i+20] for i in range(0,len(sentence),20)]
@@ -34,7 +38,7 @@ class VideoCreator:
             txts.append(TextClip(text=sentence_segs,
                                 font_size=60,
                                 size=(1920, 1080),
-                                font=r'F:\PaperReadingAgent\font\SIMHEI.TTF',
+                                font=FONT_PATH,
                                 text_align='center',
                                 vertical_align='bottom',
                                 color='white',
@@ -46,6 +50,7 @@ class VideoCreator:
 
             
         # connect the text clips
+        logging.info("合成字幕 %d" % len(txts))
         for txt in txts:
             # print(size)
             print(txt.size)
@@ -80,6 +85,7 @@ class VideoCreator:
                 logging.info(f"保存第{idx}段音频, 内容: {text}")
                 logging.info('[Metric] requestId: {}'.format(
                     ss.get_last_request_id()))
+                # tmp_texts.append(text)
             except Exception as e:
                 logging.error(f"合成音频出错: {e}")
             #save audio
@@ -87,6 +93,7 @@ class VideoCreator:
                 with open(f'./cache/summary{idx}.wav', 'wb') as f:
                     f.write(summary_audio)
                 self.audioclips.append(AudioFileClip(f'./cache/summary{idx}.wav'))
+                tmp_texts.append(text)
                 self.time.append(self.audioclips[-1].duration)
                 self.texts_starts.append(audio_start)
                 audio_start+=self.audioclips[-1].duration

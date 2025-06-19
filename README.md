@@ -5,19 +5,9 @@
 该项目是一个将PDF文件转换为讲解视频的应用程序。用户可以输入一个PDF文件，应用程序将提取其中的文本和图片，并生成一个引人注目的讲解视频。
 
 ## 项目结构
-
+目前代码还有一些杂乱
 ```
-pdf-to-video-app
-├── src
-│   ├── main.py              # 应用程序入口点
-│   ├── pdf_processor.py     # PDF处理模块
-│   ├── video_creator.py     # 视频创建模块
-│   ├── utils
-│   │   └── helpers.py       # 辅助函数
-│   └── types
-│       └── index.py         # 类型和接口定义
-├── requirements.txt         # 项目依赖
-└── README.md                # 项目文档
+
 ```
 
 ## 功能
@@ -31,13 +21,28 @@ pdf-to-video-app
 1. 确保已安装所有依赖项。可以通过以下命令安装：
    安装tesseract-ocr，参照
    <https://tesseract-ocr.github.io/tessdoc/Installation.html>
+
    ```
    conda create -n paperagent python=3.10
+   conda activate paperagent
    pip install -r requirements.txt
-   conda install -c conda-forge tesserocr
+   pip3 install torch torchvision torchaudio #linux
+   pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126 #win
+
+
    ```
 
-请修改anaconda3\envs\paperagent\lib\site-packages\deepdoctection\extern\tessocr.py
+
+## 安装小红书MCP服务
+   conda install conda-forge::nodejs
+   # Run from your project's root directory
+   npm init playwright@latest
+   # Or create a new project
+   npm init playwright@latest new-project
+   
+
+请修改
+anaconda3\envs\paperagent\lib\site-packages\deepdoctection\extern\tessocr.py
 ```python
    # 263行 前加入
    if not results:
@@ -50,6 +55,9 @@ pdf-to-video-app
 
 1. 运行应用程序：
    ```
+
+conda
+
    python src/main.py
    ```
 

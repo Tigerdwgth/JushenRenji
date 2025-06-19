@@ -12,7 +12,7 @@ import logging  # 添加导入 logging 模块
 # 将 Tesseract-OCR 添加到 PATH 环境变量
 os.environ['PATH'] += r";C:\Program Files\Tesseract-OCR"
 # 设置 TESSDATA_PREFIX 环境变量
-os.environ['TESSDATA_PREFIX'] = r".\font"
+os.environ['TESSDATA_PREFIX'] = r"/home/jdh/Projects/VlogCutter/JushenRenji/font"
 # 设置临时目录路径
 temp_dir = tempfile.gettempdir()
 os.environ['TMPDIR'] = temp_dir
@@ -47,6 +47,7 @@ def extract_images_from_pdf(pdf_path, cnt=None, store_path='./pic/'):
                     logging.info(f"Figure {figure_table_counter} found on page {i+1} with captions: {captions}")
                     img = figure.image.viz(show_cells=False, show_layouts=False, scaled_width=1920)
                     img = Image.fromarray(img)
+                    os.makedirs(store_path, exist_ok=True)  # 确保目录存在
                     # 保存图片
                     img.save(os.path.join(store_path, f'{figure_table_counter}.png'))
                 except Exception as e:
@@ -58,6 +59,7 @@ def extract_images_from_pdf(pdf_path, cnt=None, store_path='./pic/'):
                     logging.info("Table %d found on page %d", figure_table_counter, i + 1)
                     img = table.image.viz(show_cells=False, show_layouts=False, scaled_width=1920)
                     img = Image.fromarray(img)
+                    os.makedirs(store_path, exist_ok=True)  # 确保目录存在
                     img.save(os.path.join(store_path, f'{figure_table_counter}.png'))
                 except Exception as e:
                     logging.error("Error processing table %d on page %d: %s", figure_table_counter, i + 1, e, exc_info=True)

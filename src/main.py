@@ -5,7 +5,7 @@ from openai import OpenAI
 from pdf_processor import PDFProcessor
 from video_creator import VideoCreator
 from get_website_data import download_videos_from_url
-from auto_upload_bilibili import upload_video_to_bilibili
+from config import *
 from get_arxiv_latest import get_paper_from_arxiv,filter_papers_by_date,Paper
 from generate_cover import generate_cover
 import dashscope
@@ -266,7 +266,7 @@ def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().str
     # 将论文的标题以字幕的形式，显示在每段视频的最上方
     title_clips = [
         TextClip(text=_.title, font_size=25,
-                 font='F:/PaperReadingAgent/font/SIMHEI.TTF',
+                 font=FONT_PATH,
                  size=(1920, 1080),
                  color='white',
                  text_align='center', 
@@ -285,6 +285,13 @@ def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().str
     return final_video_path, origin_titles,cn_titles
 
 if __name__ == "__main__":
+    #cmd args
+    print(sys.argv)
+    args= sys.argv[1:]
+    if len(args) > 0:
+        filename= args[0]
+        print(f"处理文件: {filename}")
+    # input()
     #today robotics paper
     # papers=get_latest_embodied_ai_papers(amount=30,query="cs.RO".replace(" ","+"),date="2025-03-28")
    # papers=[            ]
@@ -304,7 +311,8 @@ if __name__ == "__main__":
         today=today.strftime(r"%Y-%m-%d")
         logging.info("今天是%s,昨天是%s", today, yesterday)
         # path,titles=generate_daily_arxiv_summary(query='cs.RO',max_papers=100,date=str(yesterday))
-        path,titles,cn_titles=generate_daily_arxiv_summary(query="""Triply-Hierarchical Diffusion Policy for Visuomotor Learning""",max_papers=1,date=str(yesterday),long_or_short="long")
+        path,titles,cn_titles=generate_daily_arxiv_summary(query=filename,max_papers=1,date=str(yesterday),long_or_short="long")
+        from auto_upload_bilibili import upload_video_to_bilibili
         if len(titles)==1:
             upload_video_to_bilibili(path,cn_titles[0],"人工智能,具身智能,机器人,模仿学习,强化学习,自动驾驶,具身人机", titles)
         else:
