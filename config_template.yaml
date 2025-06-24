@@ -1,0 +1,3 @@
+llm_api_key: <qwen-key>
+dashscope_api_key: <yourkey>
+TESSDATA_PREFIX: /home/jdh/Projects/VlogCutter/JushenRenji/font

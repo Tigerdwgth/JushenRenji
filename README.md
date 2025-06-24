@@ -7,7 +7,48 @@
 ## 项目结构
 目前代码还有一些杂乱
 ```
-
+├── app.log
+├── cache
+│   └── cached_pdf.pdf
+├── config.yaml
+├── font
+│   ├── eng.traineddata
+│   └── SIMHEI.TTF
+├── npm-debug.log
+├── output
+│   ├── cover.png
+│   ├── daily_summary.mp4
+│   ├── daily_summary.png
+│   └── part_1.mp4
+├── package.json
+├── pic
+│   ├── 1.png
+│   ├── 2.png
+│   ├── 3.png
+│   ├── 4.png
+│   ├── 5.png
+│   ├── 6.png
+│   └── 7.png
+├── README_EN.md
+├── README.md
+├── requirements.txt
+└── src
+    ├── auto_upload_bilibili.py
+    ├── code_interpreter.py
+    ├── config.py
+    ├── distribution
+    ├── extract_images_from_pdf.py
+    ├── generate_cover.py
+    ├── get_arxiv_latest.py
+    ├── get_website_data.py
+    ├── gui.py
+    ├── llm_agent.py
+    ├── main.py
+    ├── pdf_processor.py
+    ├── __pycache__
+    ├── types
+    ├── utils
+    └── video_creator.py
 ```
 
 ## 功能
@@ -55,13 +96,11 @@ anaconda3\envs\paperagent\lib\site-packages\deepdoctection\extern\tessocr.py
 
 1. 运行应用程序：
    ```
-
-conda
-
-   python src/main.py
+   python src/main.py "{papername}"
    ```
 
    <!-- 替换 `<path_to_pdf>` 为你的PDF文件路径。 -->
+
 
 ## 贡献
 
