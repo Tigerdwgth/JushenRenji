@@ -4,7 +4,7 @@ import sys
 from openai import OpenAI
 from pdf_processor import PDFProcessor
 from video_creator import VideoCreator
-from get_website_data import download_videos_from_url
+from get_website_data import download_videos_files
 from config import *
 from get_arxiv_latest import get_paper_from_arxiv,filter_papers_by_date,Paper
 from generate_cover import generate_cover
@@ -30,6 +30,22 @@ file_handler.setLevel(logging.DEBUG)
 file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
 logging.getLogger().addHandler(file_handler)
 
+
+def get_videoclips(url):
+    try:
+        if len(demowebsite)<=0:
+            demowebsite=get_paper_demo_website(text[:5000])
+            logging.info("获取到的网址为%s", demowebsite)
+        else:
+            download_videos_files(demowebsite)
+    except Exception as e:
+        logging.error("发生错误: %s", e)
+    logging.info("发现视频网址，尝试获取视频") 
+    videos=glob.glob('./pic/*.mp4')
+    videos = [VideoFileClip(video) for video in videos]
+    logging.info("提取到 %d 个视频", len(videos))
+    return videos
+
 def run_pdf_to_video_pipeline(paper=None,pdf_file_path=None,demowebsite=None,en_title="",prefix=""):
     logging.info("开始程序")
     # 输入PDF文件路径
@@ -47,18 +63,8 @@ def run_pdf_to_video_pipeline(paper=None,pdf_file_path=None,demowebsite=None,en_
     
     logging.info("提取到 %d 张图片", len(images))
     # 利用正则表达式过滤其中的网址,并访问网址直接下载视频
-    try:
-        if len(demowebsite)<=0:
-            demowebsite=get_paper_demo_website(text[:5000])
-            logging.info("获取到的网址为%s", demowebsite)
-        else:
-            download_videos_from_url(demowebsite)
-    except Exception as e:
-        logging.error("发生错误: %s", e)
-    logging.info("发现视频网址，尝试获取视频") 
-    videos=glob.glob('./pic/*.mp4')
-    videos = [VideoFileClip(video) for video in videos]
-    logging.info("提取到 %d 个视频", len(videos))
+
+    videos= get_videoclips(demowebsite)
     # 生成摘要
     logging.info("生成摘要")
     title, summary = call_llm(text)
@@ -172,7 +178,7 @@ def download_if_remote(pdf_file_path):
     # 检查文件是否存在
     if not os.path.isfile(pdf_file_path):
         logging.info("文件不存在，请检查路径。")
-        return
+        return -1
     return pdf_file_path
 
 def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().strftime(r"%Y-%m-%d"), max_papers=20, output_filename="./output/daily_summary.mp4",long_or_short="short"):
@@ -194,6 +200,10 @@ def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().str
     cn_titles=[]
     if not papers:
         logging.warning("未找到符合条件的论文")
+        try:
+            download_if_remote(query)
+        except Exception as e:
+            logging.error(f"下载或处理 PDF 文件时发生错误: {e}")
         return
     else:
         logging.info(f"找到 {len(papers)} 篇论文")
@@ -226,14 +236,16 @@ def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().str
         
         # 生成简短摘要
         logging.info("生成摘要")
-        origin_title, short_summary,cn_title = call_llm_multithread(
+        deom_website, origin_title, short_summary,cn_title = call_llm_multithread(
             [
+                (get_paper_demo_website, text[:1000]),
                 (generate_origin_title, text[:200]),
                 (generate_short_summary, f"{text[:5000]} {paper.comments}") if long_or_short == "short" else (generate_summary, paper.comments+text),
                 (generate_video_title, text[:200]),
                 
             ]
         )
+        
         cn_titles.append(cn_title)
         if not short_summary:
             logging.warning(f"摘要生成失败，跳过论文: {paper.title}")
@@ -246,13 +258,11 @@ def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().str
         # 限制图片数量为前两张
         if long_or_short == "short":
             images = images[:3]
-        
-        
+            
         # 为当前论文创建独立视频
         logging.info(f"创建第 {idx + 1} 篇论文的视频片段")
-        video_creator = VideoCreator(images, short_summary)
+        video_creator = VideoCreator(images, short_summary,video_clips=get_videoclips(deom_website))
         part_save_path = f"./output/part_{idx + 1}.mp4"
-        
         part_video_path = video_creator.create_video(part_save_path)
         video_clips.append(VideoFileClip(part_video_path))
         origin_titles.append(origin_title)

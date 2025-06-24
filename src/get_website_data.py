@@ -11,7 +11,7 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 
-def download_videos_from_url(url, download_folder='./pic'):
+def download_videos_files(url, download_folder='./pic'):
     # 创建下载文件夹
     if not os.path.exists(download_folder):
         os.makedirs(download_folder)
@@ -64,4 +64,4 @@ def download_videos_from_url(url, download_folder='./pic'):
 if __name__ == "__main__":
     # 示例 URL
     website_url = "https://superrobobrain.github.io/"
-    download_videos_from_url(website_url)
+    download_videos_files(website_url)

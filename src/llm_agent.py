@@ -124,6 +124,7 @@ def generate_video_title(text):
     ret_str = re.sub(r'[\\/:*?"<>|]', '', ret_str)
     return ret_str
 
+
 def generate_origin_title(text):
     prompt = "论文的标题是什么？仅输出论文英文标题,不输出任何其他的文字"
     return create_chat_completion(prompt, text)
@@ -169,3 +170,35 @@ def create_chat_completion(prompt, user_content=None):
         messages=messages
     )
     return response.choices[0].message.content
+
+def get_captions_from_page(text:str=''):
+    """
+    从当前的页面中获取图片和表格对应的题注。
+    要求获取图片和表格的题注，然后后按照[[图片题注1,图片题注2...],[表格题注1,表格题注2...]]的格式返回。
+    如果没有题注，则返回空列表。
+    :param text: 当前页面的文本内容，默认为空字符串。
+    :return: 包含图片和表格题注的列表，如果没有题注，则返回空列表[[],[]]。
+
+    """
+    prompt = (
+        "请从以下文本中提取图片和表格的题注,题注可能是英文或者还是中文的，比如fig，table等，"
+        "要求提取图片题注和表格题注，分别放在两个列表中，"
+        "返回格式为[[图片题注1,图片题注2...],[表格题注1,表格题注2...]]，"
+        "如果没有图片或表格题注，则对应的列表为空。"
+        "禁止输出markdown形式的文本，禁止输出多余内容，"
+        "禁止输出其他格式的文本，禁止输出其他内容。"
+        "请确保提取的题注是完整的句子，"
+        "如果题注中包含图片或表格的编号，请保留编号。"
+        "example: "
+        "文本内容：图1：这是一个示例图片，表1：这是一个示例表格。\n"
+        "返回格式：[['图1：这是一个示例图片'], ['表1：这是一个示例表格']]\n"
+        "请从以下文本中提取图片和表格的题注：\n"    
+    )
+    response = create_chat_completion(prompt,text)
+    # ['图1：这是一个示例图片', '表1：这是一个示例表格']
+    # 解析这样一个字符串
+    response2list= json.loads(response)
+    # import pdb
+    # pdb.set_trace()
+    return response2list
+    

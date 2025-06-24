@@ -7,6 +7,7 @@ import os  # 添加导入 os 模块
 import tempfile  # 添加导入 tempfile 模块
 from PIL import Image  # 添加导入 PIL 库
 import logging  # 添加导入 logging 模块
+from llm_agent import *
 # import garbgage collection
 
 # 将 Tesseract-OCR 添加到 PATH 环境变量
@@ -40,6 +41,9 @@ def extract_images_from_pdf(pdf_path, cnt=None, store_path='./pic/'):
         # 遍历 PDF 中的每一页
         figure_table_counter = 0
         for i, page in enumerate(doc):
+            text= page.text
+            captions=get_captions_from_page(text)
+            print(f"captions on page {i+1}: {captions}")
             for figure in page.figures:
                 try:
                     figure_table_counter += 1
