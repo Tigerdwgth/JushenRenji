@@ -6,3 +6,8 @@ output
 *.egg
 config.yaml
 app.log
+upload.log
+*.log
+bilibili_cookies.pkl
+*_optimized.mp4
+*_thumbnail.png
