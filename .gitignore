@@ -2,3 +2,7 @@ cache/
 output/pic/
 pic
 output
+*.pyc
+*.egg
+config.yaml
+app.log
