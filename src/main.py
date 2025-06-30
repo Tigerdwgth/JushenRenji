@@ -267,6 +267,16 @@ def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().str
         video_clips.append(VideoFileClip(part_video_path))
         origin_titles.append(origin_title)
     
+    #如果只有一篇论文，重命名part1为论文名.mp4
+    if len(papers) == 1:
+        # part_save_path = f"./output/part_{idx + 1}.mp4"
+        part_video_path=f"./output/part_1.mp4"
+        new_part_video_path = f"./output/{cn_titles[0]}.mp4"
+        os.rename(part_video_path, new_part_video_path)
+        video_clips[0] = VideoFileClip(new_part_video_path)
+        output_filename = new_part_video_path
+        
+        
     # 合并所有论文的视频片段
     if not video_clips:
         logging.warning("未生成任何视频片段，无法创建日报视频")
