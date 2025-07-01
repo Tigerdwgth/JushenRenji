@@ -54,10 +54,9 @@
    pip3 install torch torchvision torchaudio #linux
    pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126 #win
 
-
    ```
 
-
+# 自动上传更新功能
 ## 安装小红书MCP服务
    conda install conda-forge::nodejs
    # Run from your project's root directory
