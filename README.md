@@ -1,34 +1,18 @@
 # pdf-to-video-app/pdf-to-video-app/README.md
 
-# PDF to Video App
+# Paper2Video App
 
 该项目是一个将PDF文件转换为讲解视频的应用程序。用户可以输入一个PDF文件，应用程序将提取其中的文本和图片，并生成一个引人注目的讲解视频。
 
 ## 项目结构
-目前代码还有一些杂乱
 ```
-├── app.log
 ├── cache
-│   └── cached_pdf.pdf
 ├── config.yaml
 ├── font
-│   ├── eng.traineddata
-│   └── SIMHEI.TTF
 ├── npm-debug.log
 ├── output
-│   ├── cover.png
-│   ├── daily_summary.mp4
-│   ├── daily_summary.png
-│   └── part_1.mp4
 ├── package.json
 ├── pic
-│   ├── 1.png
-│   ├── 2.png
-│   ├── 3.png
-│   ├── 4.png
-│   ├── 5.png
-│   ├── 6.png
-│   └── 7.png
 ├── README_EN.md
 ├── README.md
 ├── requirements.txt
@@ -69,12 +53,11 @@
    pip install -r requirements.txt
    pip3 install torch torchvision torchaudio #linux
    pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126 #win
-
-
    pip install -e .
+
    ```
 
-
+# 自动上传更新功能
 ## 安装小红书MCP服务
    conda install conda-forge::nodejs
    # Run from your project's root directory
