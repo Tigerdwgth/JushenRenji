@@ -7,13 +7,16 @@ import shutil
 from openai import OpenAI
 import logging
 import yaml
-from config import *
+import inspect
+from src.config import *
+from src.llm_tools.prompts import prompts_dict
 # 配置日志记录
 logging.basicConfig(
     filename='app.log',
     level=logging.DEBUG,  # 修改为 DEBUG 级别
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
+
 
 def load_config():
     """
@@ -96,46 +99,45 @@ def initialize_agent():
 
 MANUALLY_EXTRACT_IMAGES, model,client= initialize_agent()
 
+def get_prompt(func_name, text=None):
+    """
+    根据函数名称从 prompts_dict 中获取对应的 prompt。
+    如果提供了 text，则将 text 附加到 prompt 后。
+    """
+    prompt = prompts_dict.get(func_name, "")
+    if not prompt:
+        logging.warning(f"未找到函数 {func_name} 对应的 prompt")
+    if text:
+        prompt += text
+    return prompt
+
+
 def generate_summary(text):
-    prompt = (
-        "请总结以下论文的核心内容,重点讲解方法，参考摘要，请使用简洁的表达，生成约1000字的总结。"
-        "禁止输出markdown形式的文本，不要一条一条的列出，而是以长文的形式。"
-        "你的目标是帮助用户快速理解论文核心内容，语言通俗易懂，适合制作论文讲解视频的文案。"
-        "请以 “这篇文章...”作为开始，不要重复文章标题\n" + text
-    )
+    prompt = get_prompt(inspect.currentframe().f_code.co_name, text)
     return create_chat_completion(prompt)
+
 def generate_short_summary(text):
-    prompt = ("""你现在是组会分享论文的研究生，请分享下面的文章，严格遵循以下要求。
-              1.简单介绍一下文章工作单位（使用缩写），不用说明作者名字，
-              2. 如果有提到是什么会议也请说明（仅使用缩写+年份形式）,没有提及的话，请直接忽略这个要求，不用说未提及，请勿编造任何信息。
-              3. 用两句话简短介绍一下这篇文章的核心方法、模型结构和贡献，言简意赅。
-              4. 禁止复读论文标题
-              5. 禁止使用markdown形式的输出，请用完整的句子，而非列举点,使用中文"""+text)
+    prompt = get_prompt(inspect.currentframe().f_code.co_name, text)
     return create_chat_completion(prompt)
-    
 
 def generate_video_title(text):
-    prompt = (
-        "为讲解视频生成一个简介易懂明了吸引人的中文标题，仅输出标题不输出其他内容，"
-        "禁止输出多余内容，与标点符号，不要标题加引号。"
-    )
-    ret_str=create_chat_completion(prompt, text)
+    prompt = get_prompt(inspect.currentframe().f_code.co_name)
+    ret_str = create_chat_completion(prompt, text)
     #使用正则表达式过滤掉不能出现在路径的字符
     ret_str = re.sub(r'[\\/:*?"<>|]', '', ret_str)
     return ret_str
 
-
 def generate_origin_title(text):
-    prompt = "论文的标题是什么？仅输出论文英文标题,不输出任何其他的文字"
+    prompt = get_prompt(inspect.currentframe().f_code.co_name)
     return create_chat_completion(prompt, text)
+
 def generate_video_proceedings(text):
-    prompt = "请问这篇论文是发表在哪个会议或期刊上的？仅输出会议或期刊名称如ICRA2025，CVPR2024，不输出其他多余文字,如果文字中没有提到请输出Arxiv2025"
+    prompt = get_prompt(inspect.currentframe().f_code.co_name)
     return create_chat_completion(prompt, text)
 
 def get_paper_demo_website(text):
-    prompt = """请问这篇论文的视频网址是什么？,请以json格式输出,需要可以被python解析,禁止输出其他多余文字，禁止输出markdown，仅输出最终json,格式：{"state":"0/1之间的一个代表失败或成功","url":"http://www.proj-demo.com"}
-    """
-    ret= create_chat_completion(prompt, text)
+    prompt = get_prompt(inspect.currentframe().f_code.co_name)
+    ret = create_chat_completion(prompt, text)
     
     logging.info(f"{ret}")
     # 使用正则表达式提取 JSON 部分
@@ -171,34 +173,9 @@ def create_chat_completion(prompt, user_content=None):
     )
     return response.choices[0].message.content
 
-def get_captions_from_page(text:str=''):
-    """
-    从当前的页面中获取图片和表格对应的题注。
-    要求获取图片和表格的题注，然后后按照[[图片题注1,图片题注2...],[表格题注1,表格题注2...]]的格式返回。
-    如果没有题注，则返回空列表。
-    :param text: 当前页面的文本内容，默认为空字符串。
-    :return: 包含图片和表格题注的列表，如果没有题注，则返回空列表[[],[]]。
-
-    """
-    prompt = (
-        "请从以下文本中提取图片和表格的题注,题注可能是英文或者还是中文的，比如fig，table等，"
-        "要求提取图片题注和表格题注，分别放在两个列表中，"
-        "返回格式为[[图片题注1,图片题注2...],[表格题注1,表格题注2...]]，"
-        "如果没有图片或表格题注，则对应的列表为空。"
-        "禁止输出markdown形式的文本，禁止输出多余内容，"
-        "禁止输出其他格式的文本，禁止输出其他内容。"
-        "请确保提取的题注是完整的句子，"
-        "如果题注中包含图片或表格的编号，请保留编号。"
-        "example: "
-        "文本内容：图1：这是一个示例图片，表1：这是一个示例表格。\n"
-        "返回格式：[['图1：这是一个示例图片'], ['表1：这是一个示例表格']]\n"
-        "请从以下文本中提取图片和表格的题注：\n"    
-    )
-    response = create_chat_completion(prompt,text)
-    # ['图1：这是一个示例图片', '表1：这是一个示例表格']
-    # 解析这样一个字符串
-    response2list= json.loads(response)
-    # import pdb
-    # pdb.set_trace()
+def get_captions_from_page(text: str = ''):
+    prompt = get_prompt(inspect.currentframe().f_code.co_name, text)
+    response = create_chat_completion(prompt, text)
+    response2list = json.loads(response)
     return response2list
-    
+

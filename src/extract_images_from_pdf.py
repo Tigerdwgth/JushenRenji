@@ -7,7 +7,7 @@ import os  # 添加导入 os 模块
 import tempfile  # 添加导入 tempfile 模块
 from PIL import Image  # 添加导入 PIL 库
 import logging  # 添加导入 logging 模块
-from llm_agent import *
+from src.llm_tools.llm_agent import *
 # import garbgage collection
 
 # 将 Tesseract-OCR 添加到 PATH 环境变量
