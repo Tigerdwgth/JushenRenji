@@ -53,6 +53,7 @@
    pip install -r requirements.txt
    pip3 install torch torchvision torchaudio #linux
    pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126 #win
+   pip install -e .
 
    ```
 
@@ -79,7 +80,7 @@ anaconda3\envs\paperagent\lib\site-packages\deepdoctection\extern\tessocr.py
 
 1. 运行应用程序：
    ```
-   python src/main.py "{papername}"
+   python src/main.py --filename "{papername}"
    ```
 
    <!-- 替换 `<path_to_pdf>` 为你的PDF文件路径。 -->
