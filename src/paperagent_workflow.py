@@ -273,8 +273,8 @@ def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().str
         part_video_path=f"./output/part_1.mp4"
         new_part_video_path = f"./output/{cn_titles[0]}.mp4"
         os.rename(part_video_path, new_part_video_path)
-        video_clips[0] = VideoFileClip(new_part_video_path)
-        output_filename = new_part_video_path
+        # video_clips[0] = VideoFileClip(new_part_video_path)
+        # output_filename = new_part_video_path
         
         
     # 合并所有论文的视频片段
