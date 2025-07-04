@@ -12,3 +12,4 @@ bilibili_cookies.pkl
 *_optimized.mp4
 *_thumbnail.png
 __pycache__/
+src/__pycache__/
