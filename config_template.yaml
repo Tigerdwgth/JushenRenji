@@ -11,3 +11,6 @@ bilibili_cookies_file: "bilibili_cookies.pkl"
 
 # Environment Variables
 tessdata_prefix: "./font"
+
+# Language Settings
+output_language: "zh"  # zh for Chinese, en for English

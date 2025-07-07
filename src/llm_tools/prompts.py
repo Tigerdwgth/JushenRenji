@@ -1,3 +1,14 @@
+from src.config import OUTPUT_LANGUAGE
+
+# 语言后缀
+LANGUAGE_SUFFIX = {
+    "zh": "\n请用中文回答。输出语言：中文",
+    "en": "\nPlease answer in English. Output language: English"
+}
+
+
+
+
 prompts_dict = {
     "generate_summary": (
         "请总结以下论文的核心内容,重点讲解方法，参考摘要，请使用简洁的表达，生成约1000字的总结。"
@@ -37,3 +48,17 @@ prompts_dict = {
         "如果题注中包含图片或表格的编号，请保留编号。"
     )
 }
+def get_language_suffix():
+    """获取当前语言的后缀"""
+    return LANGUAGE_SUFFIX.get(OUTPUT_LANGUAGE, LANGUAGE_SUFFIX["zh"])
+
+# 在每个提示词后添加语言后缀
+def add_language_suffix_to_prompts():
+    """为所有提示词添加语言后缀"""
+    suffix = get_language_suffix()
+    for key in prompts_dict:
+        prompts_dict[key] = prompts_dict[key] + suffix
+
+
+# 初始化提示词语言后缀
+add_language_suffix_to_prompts()
