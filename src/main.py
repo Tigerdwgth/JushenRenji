@@ -46,6 +46,8 @@ if __name__ == "__main__":
 
     args= parse_args()
     filename = args.filename
+    language = args.output_language
+    
     try:
         today=datetime.datetime.now()
         yesterday=today-datetime.timedelta(days=400)

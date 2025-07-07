@@ -196,10 +196,6 @@ def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().str
     logging.info(f"找到 {len(papers)} 篇论文,正在筛选...")
     # 过滤日期
     papers = filter_papers_by_date(papers, date)
-    # 限制论文数量
-    if len(papers) > max_papers:
-        papers = papers[:max_papers]
-        logging.info(f"限制论文数量为 {max_papers} 篇")
     # 如果没有找到符合条件的论文，返回
     cn_titles=[]
     if not papers:
@@ -210,7 +206,7 @@ def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().str
             logging.error(f"下载或处理 PDF 文件时发生错误: {e}")
         return
     else:
-        logging.info(f"最终处理 {len(papers)} 篇论文")
+        logging.info(f"找到 {len(papers)} 篇论文")
         logging.info(f"日期: {date}")
         logging.info([paper.title for paper in papers])  # 使用 Paper 数据类的属性
 

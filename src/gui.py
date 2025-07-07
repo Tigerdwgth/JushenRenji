@@ -146,42 +146,6 @@ with gr.Blocks(title="具身人机 Arxiv 视频生成器", theme=gr.themes.Soft(
                 interactive=False,
                 placeholder="点击'生成视频'开始处理..."
             )
-            
-            gr.Markdown("### 🎬 视频预览")
-            video_output = gr.Video(
-                label="生成的视频",
-                visible=False,
-                show_download_button=True,
-                height=300
-            )
-            
-            video_file = gr.File(
-                label="📁 下载视频文件",
-                visible=False,
-                file_count="single",
-                file_types=[".mp4", ".avi", ".mov"]
-            )
-            
-            video_container = gr.Column(visible=False)
-    
-    # 绑定事件
-    submit_btn.click(
-        fn=process_arxiv_summary,
-        inputs=[query_input, max_papers_input, long_or_short_input],
-        outputs=[output_text, video_output, video_file, video_container],
-        api_name="arxiv2bili"
-    )
-    
-    # 添加页脚信息
-    gr.Markdown("""
-    ---
-    **提示：**
-    - 首次运行可能需要较长时间，请耐心等待
-    - 确保网络连接正常，API 密钥配置正确
-    - 生成的视频保存在 `output` 目录下
-    - 如遇问题，请查看控制台日志
-    """)
-
 if __name__ == "__main__":
     # 配置日志
     logging.basicConfig(
@@ -200,3 +164,39 @@ if __name__ == "__main__":
         share=False,
         debug=True
     )
+        logging.info("程序结束")
+        logging.shutdown()
+
+# 创建 Gradio 界面
+with gr.Blocks(title="具身人机 Arxiv 视频生成器") as demo:
+    gr.Markdown("""
+    # 具身人机 Arxiv 视频生成器
+    输入关键词，自动生成并上传具身智能相关论文摘要视频到 Bilibili。
+    """)
+    with gr.Row():
+        with gr.Column():
+            query_input = gr.Textbox(label="查询关键词", placeholder="如 'cs.RO'，可输入 arxiv 分类或关键词", value="cs.RO", lines=1)
+            max_papers_input = gr.Number(label="最大论文数 (1~20)", value=3, precision=0, minimum=1, maximum=20)
+            long_or_short_input = gr.Radio([
+                "long", "short"
+            ], label="摘要类型", value="long", interactive=True)
+            submit_btn = gr.Button("生成并上传")
+        with gr.Column():
+            output_text = gr.Textbox(label="运行结果", lines=6, interactive=False)
+    gr.Examples([
+        ["cs.RO", 3, "long"],
+        ["embodied AI", 2, "short"],
+        ["robotics", 1, "long"]
+    ],
+        inputs=[query_input, max_papers_input, long_or_short_input],
+        label="示例"
+    )
+    submit_btn.click(
+        process_arxiv_summary,
+        inputs=[query_input, max_papers_input, long_or_short_input],
+        outputs=output_text,
+        api_name="arxiv2bili"
+    )
+
+if __name__ == "__main__":
+    demo.launch(show_error=True)
