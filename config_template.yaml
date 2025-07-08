@@ -8,8 +8,6 @@ pic_dir: "./pic"
 output_dir: "./output"
 font_path: "./font/SIMHEI.TTF"
 bilibili_cookies_file: "bilibili_cookies.pkl"
-
-# Environment Variables
 tessdata_prefix: "./font"
 
 # Language Settings

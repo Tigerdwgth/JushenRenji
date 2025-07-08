@@ -48,6 +48,22 @@ if __name__ == "__main__":
     filename = args.filename
     language = args.output_language
     
+    # 动态更新语言配置
+    if language:
+        import src.config as config
+        config.OUTPUT_LANGUAGE = language
+        # 重新初始化提示词
+        from src.llm_tools.prompts import BASE_PROMPTS, get_language_suffix
+        from src.llm_tools import prompts
+        # 重新生成提示词字典
+        language_suffix = get_language_suffix()
+        for key, prompt_dict in BASE_PROMPTS.items():
+            if isinstance(prompt_dict, dict):
+                prompt = prompt_dict.get(language, prompt_dict.get("zh", ""))
+            else:
+                prompt = prompt_dict
+            prompts.prompts_dict[key] = prompt + language_suffix
+    
     try:
         today=datetime.datetime.now()
         yesterday=today-datetime.timedelta(days=400)
