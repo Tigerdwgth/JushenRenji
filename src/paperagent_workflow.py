@@ -8,6 +8,7 @@ from get_website_data import download_videos_files
 from config import *
 from get_arxiv_latest import get_paper_from_arxiv,filter_papers_by_date,Paper
 from generate_cover import generate_cover
+# from auto_upload_bilibili import upload_video_to_bilibili
 import dashscope
 import glob
 from moviepy import *
@@ -19,6 +20,20 @@ import datetime
 import logging
 
 from src.llm_tools.llm_agent import *
+# image agent for qwen-vl
+try:
+    from src.llm_tools.image_agent import ImageAgent
+except Exception:
+    # fallback import path
+    from llm_tools.image_agent import ImageAgent
+
+try:
+    from src.extract_caption import extract_captions_from_pdf
+except Exception:
+    try:
+        from extract_caption import extract_captions_from_pdf
+    except Exception:
+        extract_captions_from_pdf = None
 
 # 配置日志记录
 logging.basicConfig(
@@ -31,19 +46,75 @@ file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(mes
 logging.getLogger().addHandler(file_handler)
 
 
-def get_videoclips(url):
+def extract_abstract_from_text(raw_text: str, limit: int = 1500) -> str:
+    """Heuristic extraction of abstract text from full PDF content."""
+    if not raw_text:
+        return ""
+    text = raw_text.strip()
+    if not text:
+        return ""
+
+    pattern = re.compile(r'(?:^|\n)\s*(Abstract|ABSTRACT|摘要)[:\s]*')
+    match = pattern.search(text)
+    abstract = ""
+    if match:
+        start = match.end()
+        remainder = text[start:]
+        end_pattern = re.compile(r'(?:^|\n)\s*(Keywords|Index Terms|INTRODUCTION|Introduction|\d+\s+Introduction|1\.|I\.)', re.IGNORECASE)
+        end_match = end_pattern.search(remainder)
+        abstract = remainder[:end_match.start()] if end_match else remainder
+    else:
+        abstract = text[:limit]
+
+    lines = [line.strip() for line in abstract.splitlines() if line.strip()]
+    condensed = ' '.join(lines)
+    return condensed[:limit]
+
+
+def get_videoclips(paper_text: str = "", demo_url: str = "", download_folder: str = './pic'):
+    """Download supplementary demo videos if available and return VideoFileClip list."""
+    resolved_url = (demo_url or '').strip()
+
+    if not resolved_url and paper_text:
+        try:
+            candidate = get_paper_demo_website(paper_text[:1500])
+            if candidate:
+                resolved_url = candidate.strip()
+                logging.info("自动获取到的视频网址: %s", resolved_url)
+        except Exception as e:
+            logging.error("自动获取视频网址失败: %s", e)
+
+    if not resolved_url:
+        logging.info("未提供可用的视频网址，跳过演示视频下载")
+        return []
+
+    # 清理旧的 mp4，避免混入历史文件
     try:
-        if len(demowebsite)<=0:
-            demowebsite=get_paper_demo_website(text[:5000])
-            logging.info("获取到的网址为%s", demowebsite)
-        else:
-            download_videos_files(demowebsite)
+        for stale_video in glob.glob(os.path.join(download_folder, '*.mp4')):
+            os.remove(stale_video)
     except Exception as e:
-        logging.error("发生错误: %s", e)
-    logging.info("发现视频网址，尝试获取视频") 
-    videos=glob.glob('./pic/*.mp4')
-    videos = [VideoFileClip(video) for video in videos]
-    logging.info("提取到 %d 个视频", len(videos))
+        logging.warning("清理旧视频文件失败: %s", e)
+
+    download_success = False
+    try:
+        download_success = download_videos_files(resolved_url, download_folder=download_folder) or False
+    except Exception as e:
+        logging.error("下载演示视频失败: %s", e)
+
+    logging.info("发现视频网址 %s，尝试获取视频", resolved_url)
+    video_paths = sorted(glob.glob(os.path.join(download_folder, '*.mp4')))
+    videos = []
+    for video in video_paths:
+        try:
+            videos.append(VideoFileClip(video))
+        except Exception as e:
+            logging.warning("加载演示视频 %s 失败: %s", video, e)
+
+    if videos:
+        logging.info("提取到 %d 个演示视频", len(videos))
+    elif not download_success:
+        logging.info("未成功获取任何演示视频")
+
     return videos
 
 def run_pdf_to_video_pipeline(paper=None,pdf_file_path=None,demowebsite=None,en_title="",prefix=""):
@@ -59,19 +130,87 @@ def run_pdf_to_video_pipeline(paper=None,pdf_file_path=None,demowebsite=None,en_
     # 提取文本和图片
     logging.info("提取PDF文本")
     text = pdf_processor.extract_text()
+    paper_abstract = ""
+    if paper and getattr(paper, "abstract", None):
+        paper_abstract = paper.abstract.strip()
+    if not paper_abstract:
+        paper_abstract = extract_abstract_from_text(text)
     images = process_pdf_images(pdf_processor)
+    # 尝试使用 qwen-vl 对图片做解释（如果可用）
+    try:
+        os.makedirs('./cache', exist_ok=True)
+        image_agent = ImageAgent()
+        # 构建 contexts：从 PDF 提取的 captions 可作为题注
+        try:
+            from src.extract_caption import extract_captions_from_pdf
+        except Exception:
+            try:
+                from extract_caption import extract_captions_from_pdf
+            except Exception:
+                extract_captions_from_pdf = None
+        contexts = None
+        if extract_captions_from_pdf:
+            try:
+                contexts_dict = extract_captions_from_pdf(pdf_file_path)
+                # contexts expects 1-based index -> caption text; try to map fig_1->1 etc.
+                contexts = {}
+                for k, v in contexts_dict.items():
+                    m = re.search(r"(\d+)", k)
+                    if m:
+                        idx = int(m.group(1))
+                        contexts[idx] = v
+            except Exception:
+                contexts = None
+
+        # 先用LLM总结文章核心内容，然后传递给图像解释
+        logging.info("生成文章核心内容总结用于图像解释")
+        try:
+            paper_core_summary = generate_summary(text)
+            logging.info("文章核心内容总结生成成功")
+        except Exception as e:
+            logging.warning(f"生成文章核心内容总结失败: {e}")
+            paper_core_summary = text  # 如果失败，使用原始文本
+
+        explanations = image_agent.explain_images(images, contexts=contexts, paper_abstract=paper_abstract, paper_text=paper_core_summary)
+
+        # 为图像解释添加上下文和过渡语句
+        logging.info("为图像解释添加上下文和过渡语句")
+        try:
+            explanations = add_context_to_image_explanations(explanations)
+            logging.info("上下文和过渡语句添加成功")
+        except Exception as e:
+            logging.warning(f"添加上下文和过渡语句失败: {e}")
+
+        with open('./cache/image_explanations.json', 'w', encoding='utf-8') as f:
+            json.dump(explanations, f, ensure_ascii=False, indent=2)
+        logging.info("已保存图像解释到 ./cache/image_explanations.json")
+    except Exception as e:
+        logging.warning("调用 image_agent 解释图片失败: %s", e)
     
     logging.info("提取到 %d 张图片", len(images))
     # 利用正则表达式过滤其中的网址,并访问网址直接下载视频
 
-    videos= get_videoclips(demowebsite)
+    videos= get_videoclips(text, demowebsite)
     # 生成摘要
     logging.info("生成摘要")
     title, summary = call_llm(text)
     
-    # 创建视频
+    # 创建视频（将图像解释传入 VideoCreator，使每张图像可被讲解）
     logging.info("开始创建视频")
-    video_creator = VideoCreator(images, summary,videos)
+    # explanations 之前可能已被定义（尝试在上文调用 image_agent.explain_images）
+    image_explanations = None
+    try:
+        # 如果缓存文件存在，优先读取；否则如果变量在本作用域被设置则使用
+        if os.path.exists('./cache/image_explanations.json'):
+            with open('./cache/image_explanations.json', 'r', encoding='utf-8') as f:
+                image_explanations = json.load(f)
+        else:
+            # 保持以前的变量名兼容性
+            image_explanations = globals().get('explanations', None)
+    except Exception:
+        image_explanations = globals().get('explanations', None)
+
+    video_creator = VideoCreator(images, summary, videos, image_explanations=image_explanations)
     save_path = f"./output/{title}.mp4"
     video_path = video_creator.create_video(save_path)
     generate_cover('./pic/1.png', title, video_path.replace(".mp4",".png"))
@@ -130,9 +269,15 @@ def process_pdf_images(pdf_processor,cnt=None):
             os.remove(f)
         pdf_processor.extract_images(cnt=cnt)
         images = glob.glob('./pic/*.png')
+        # 按文件名中的数字排序
+        images.sort(key=lambda x: int(re.findall(r'\d+', os.path.basename(x))[0]) if re.findall(r'\d+', os.path.basename(x)) else 0)
+        logging.info(f"图片文件排序后的顺序: {[os.path.basename(img) for img in images]}")
         images = [Image.open(image) for image in images]
     else:
         images = glob.glob('./pic/*.png')
+        # 同样进行排序
+        images.sort(key=lambda x: int(re.findall(r'\d+', os.path.basename(x))[0]) if re.findall(r'\d+', os.path.basename(x)) else 0)
+        logging.info(f"手动提取图片排序后的顺序: {[os.path.basename(img) for img in images]}")
         images = [Image.open(image) for image in images]
     return images
 
@@ -196,6 +341,10 @@ def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().str
     logging.info(f"找到 {len(papers)} 篇论文,正在筛选...")
     # 过滤日期
     papers = filter_papers_by_date(papers, date)
+    # 限制论文数量
+    if len(papers) > max_papers:
+        papers = papers[:max_papers]
+        logging.info(f"限制论文数量为 {max_papers} 篇")
     # 如果没有找到符合条件的论文，返回
     cn_titles=[]
     if not papers:
@@ -214,12 +363,12 @@ def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().str
     video_clips = []
     origin_titles = []
 
-    for idx, paper in enumerate(papers):
-        logging.info(f"处理第 {idx + 1} 篇论文: {paper.title}")
+    for paper_idx, paper in enumerate(papers):
+        logging.info(f"处理第 {paper_idx + 1} 篇论文: {paper.title}")
         # 下载论文 PDF
         pdf_url = paper.link.replace("abs", "pdf").split('v1')[0]
         pdf_file_path = download_if_remote(pdf_url)
-        if not pdf_file_path:
+        if not pdf_file_path or pdf_file_path == -1:
             logging.warning(f"无法下载或找到 PDF 文件: {pdf_url}")
             continue
         
@@ -230,6 +379,46 @@ def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().str
         logging.info("提取 PDF 文本和图片")
         text = pdf_processor.extract_text()
         images = process_pdf_images(pdf_processor, cnt=2 if long_or_short == "short" else None)
+        paper_abstract = paper.abstract.strip() if getattr(paper, "abstract", None) else extract_abstract_from_text(text)
+        # 对提取到的图片尝试做图像解释并保存
+        try:
+            os.makedirs('./cache', exist_ok=True)
+            image_agent = ImageAgent()
+            # reuse extract_captions_from_pdf if available
+            try:
+                contexts_dict = extract_captions_from_pdf(pdf_file_path) if 'extract_captions_from_pdf' in globals() else {}
+            except Exception:
+                contexts_dict = {}
+            contexts = {}
+            for k, v in (contexts_dict or {}).items():
+                m = re.search(r"(\d+)", k)
+                if m:
+                    idx = int(m.group(1))
+                    contexts[idx] = v
+
+            # 先用LLM总结文章核心内容，然后传递给图像解释
+            logging.info("生成文章核心内容总结用于图像解释")
+            try:
+                paper_core_summary = generate_summary(text)
+                logging.info("文章核心内容总结生成成功")
+            except Exception as e:
+                logging.warning(f"生成文章核心内容总结失败: {e}")
+                paper_core_summary = text  # 如果失败，使用原始文本
+
+            explanations = image_agent.explain_images(images, contexts=contexts, paper_abstract=paper_abstract, paper_text=paper_core_summary)
+
+            # 为图像解释添加上下文和过渡语句
+            logging.info("为图像解释添加上下文和过渡语句")
+            try:
+                explanations = add_context_to_image_explanations(explanations)
+                logging.info("上下文和过渡语句添加成功")
+            except Exception as e:
+                logging.warning(f"添加上下文和过渡语句失败: {e}")
+
+            with open(f'./cache/image_explanations_part_{paper_idx+1}.json', 'w', encoding='utf-8') as f:
+                json.dump(explanations, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logging.warning("图像解释保存失败: %s", e)
         if not images:
             logging.warning(f"未提取到图片，跳过论文: {paper.title}")
             continue
@@ -260,26 +449,37 @@ def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().str
             images = images[:3]
             
         # 为当前论文创建独立视频
-        logging.info(f"创建第 {idx + 1} 篇论文的视频片段")
-        video_creator = VideoCreator(images, short_summary,video_clips=get_videoclips(deom_website))
-        part_save_path = f"./output/part_{idx + 1}.mp4"
+        logging.info(f"创建第 {paper_idx + 1} 篇论文的视频片段")
+        # 传入图像解释以便合成时对每张图片进行解读性讲解
+        try:
+            image_explanations_part = None
+            cache_path = f'./cache/image_explanations_part_{paper_idx+1}.json'
+            if os.path.exists(cache_path):
+                with open(cache_path, 'r', encoding='utf-8') as f:
+                    image_explanations_part = json.load(f)
+        except Exception:
+            image_explanations_part = None
+        video_creator = VideoCreator(images, short_summary, video_clips=get_videoclips(text, deom_website), image_explanations=image_explanations_part)
+        part_save_path = f"./output/part_{paper_idx + 1}.mp4"
         part_video_path = video_creator.create_video(part_save_path)
         video_clips.append(VideoFileClip(part_video_path))
         origin_titles.append(origin_title)
     
     #如果只有一篇论文，重命名part1为论文名.mp4
     if len(papers) == 1:
-        # part_save_path = f"./output/part_{idx + 1}.mp4"
-        part_video_path=f"./output/part_1.mp4"
-        new_part_video_path = f"./output/{cn_titles[0]}.mp4"
+        part_save_path = f"./output/part_1.mp4"
+        part_video_path= part_save_path
+        date_str=datetime.datetime.now().strftime(r"%Y-%m-%d")
+        new_part_video_path = f"./output/{date_str}_{cn_titles[0]}.mp4"
         os.rename(part_video_path, new_part_video_path)
+        return
         # video_clips[0] = VideoFileClip(new_part_video_path)
         # output_filename = new_part_video_path
         
         
     # 合并所有论文的视频片段
     if not video_clips:
-        logging.warning("未生成任何视频片段，无法创建日报视频")
+        logging.warning("未生成任何视频片段， 无法创建日报视频")
         return
     
     logging.info("合并所有论文的视频片段")

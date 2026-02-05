@@ -42,9 +42,6 @@ def extract_images_from_pdf(pdf_path, cnt=None, store_path='./pic/'):
         figure_table_counter = 0
         for i, page in enumerate(doc):
             text= page.text
-            print(f"Page {i+1} text: {text}")
-            captions=get_captions_from_page(text)
-            print(f"captions on page {i+1}: {captions}")
             for figure in page.figures:
                 try:
                     figure_table_counter += 1

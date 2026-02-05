@@ -1,8 +1,11 @@
 cache/
 output/pic/
+node_modules/
 pic
 output
 *.pyc
+src/__pycache__
+*/*.pyc
 *.egg
 *.egg-info
 config.yaml
@@ -14,3 +17,4 @@ bilibili_cookies.pkl
 *_thumbnail.png
 __pycache__
 src/__pycache__
+
