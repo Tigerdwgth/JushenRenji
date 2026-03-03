@@ -10,6 +10,7 @@ import logging
 import os
 import subprocess
 import time
+import shutil
 from typing import Optional, List
 
 logger = logging.getLogger(__name__)
@@ -21,64 +22,115 @@ MCP_SERVER_URL = "http://localhost:18060/mcp"
 _mcp_process: Optional[subprocess.Popen] = None
 
 
+def _is_service_reachable(timeout: int = 3) -> bool:
+    """检查 MCP HTTP 服务是否可达。"""
+    try:
+        import requests
+
+        response = requests.get(MCP_SERVER_URL, timeout=timeout)
+        # 一些服务即使返回 404/405 也说明端口可达
+        return response.status_code < 500
+    except Exception:
+        return False
+
+
+def _candidate_local_mcp_paths() -> List[str]:
+    """返回可能存在 xiaohongshu-mcp 源码的路径列表。"""
+    module_dir = os.path.dirname(os.path.abspath(__file__))
+    candidates = [
+        os.path.abspath(os.path.join(module_dir, "../../../../xiaohongshu-mcp")),
+        os.path.abspath(os.path.join(module_dir, "../../xiaohongshu-mcp")),
+        os.path.abspath(os.path.join(module_dir, "../../../xiaohongshu-mcp")),
+        os.path.expanduser("~/xiaohongshu-mcp"),
+    ]
+    # 去重且保持顺序
+    seen = set()
+    deduped = []
+    for path in candidates:
+        if path not in seen:
+            deduped.append(path)
+            seen.add(path)
+    return deduped
+
+
+def _start_service_via_docker() -> bool:
+    """尝试使用 Docker 启动服务。"""
+    global _mcp_process
+    if not shutil.which("docker"):
+        return False
+
+    try:
+        docker_proc = subprocess.run(
+            ["docker", "ps", "--format", "{{.Names}}"],
+            capture_output=True,
+            text=True,
+        )
+        if docker_proc.returncode != 0:
+            logger.warning("检测到 docker 命令不可用或无权限，跳过 Docker 启动。")
+            return False
+
+        logger.info("使用 Docker 启动 MCP 服务...")
+        _mcp_process = subprocess.Popen(
+            ["docker", "run", "--rm", "-p", "18060:18060", "xpzouying/xiaohongshu-mcp"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        return True
+    except Exception as exc:
+        logger.warning("Docker 启动失败: %s", exc)
+        return False
+
+
+def _start_service_via_local_source() -> bool:
+    """尝试通过本地源码 go run 启动服务。"""
+    global _mcp_process
+    if not shutil.which("go"):
+        return False
+
+    for mcp_path in _candidate_local_mcp_paths():
+        if os.path.exists(mcp_path):
+            try:
+                logger.info("使用源码启动 MCP 服务: %s", mcp_path)
+                _mcp_process = subprocess.Popen(
+                    ["go", "run", "."],
+                    cwd=mcp_path,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+                return True
+            except Exception as exc:
+                logger.warning("源码启动失败 (%s): %s", mcp_path, exc)
+
+    return False
+
+
 def _ensure_mcp_service():
     """确保 MCP 服务已启动"""
     global _mcp_process
 
     # 检查服务是否已运行
-    try:
-        import requests
-        response = requests.get(MCP_SERVER_URL, timeout=5)
+    if _is_service_reachable(timeout=5):
         logger.info("MCP 服务已运行")
         return True
-    except:
-        pass
 
     # 服务未运行，尝试启动
     logger.warning("MCP 服务未运行，正在启动...")
 
-    # 尝试 Docker 启动
-    try:
-        docker_proc = subprocess.run(
-            ["docker", "ps", "--format", "{{.Names}}"],
-            capture_output=True, text=True
-        )
-        if docker_proc.returncode == 0:
-            logger.info("使用 Docker 启动 MCP 服务...")
-            _mcp_process = subprocess.Popen(
-                ["docker", "run", "-p", "18060:18060", "xpzouying/xiaohongshu-mcp"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
-            )
-    except:
-        pass
-
-    if not _mcp_process:
-        # 尝试从源码启动
-        mcp_path = os.path.abspath(__file__ + "/../../../../xiaohongshu-mcp")
-        if os.path.exists(mcp_path):
-            logger.info(f"使用源码启动 MCP 服务: {mcp_path}")
-            _mcp_process = subprocess.Popen(
-                ["go", "run", "."],
-                cwd=mcp_path,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
-            )
-        else:
-            logger.error(f"无法找到 xiaohongshu-mcp 项目")
-            logger.info("请手动启动: docker run -p 18060:18060 xpzouying/xiaohongshu-mcp")
-            return False
+    started = _start_service_via_docker()
+    if not started:
+        started = _start_service_via_local_source()
+    if not started:
+        logger.error("自动启动失败：Docker 不可用且未找到可运行的本地 xiaohongshu-mcp 源码。")
+        logger.info("请手动启动: docker run -p 18060:18060 xpzouying/xiaohongshu-mcp")
+        return False
 
     # 等待服务启动
     for i in range(30):
         time.sleep(2)
-        try:
-            import requests
-            response = requests.get(MCP_SERVER_URL, timeout=5)
+        if _is_service_reachable(timeout=5):
             logger.info("MCP 服务启动成功!")
             return True
-        except:
-            logger.info(f"等待服务启动... ({i+1}/30)")
+        logger.info(f"等待服务启动... ({i+1}/30)")
 
     logger.error("MCP 服务启动超时")
     return False
@@ -99,7 +151,8 @@ class XiaohongshuMCPUploader:
         """向 MCP 服务器发送请求"""
         import requests
 
-        _ensure_mcp_service()
+        if not _ensure_mcp_service():
+            return None
 
         payload = {
             "jsonrpc": "2.0",
