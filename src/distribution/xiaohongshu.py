@@ -1,77 +1,116 @@
 # ==================== 小红书 MCP 上传方式 ====================
 """
-使用 MCP 协议上传到小红书
-需要先启动 MCP 服务:
-    docker run -p 18060:18060 xpzouying/xiaohongshu-mcp
-    # 或从源码: git clone && cd xiaohongshu-mcp && go run .
+使用 MCP 协议上传到小红书（图文 / 视频）。
+
+MCP 服务启动方式（推荐 docker-compose）：
+
+  mkdir -p ./data/xhs ./images/xhs
+  docker run -d --name xhs-mcp \\
+    -p 18060:18060 \\
+    -v "$(pwd)/data/xhs:/app/data" \\
+    -v "$(pwd)/images/xhs:/app/images" \\
+    -e COOKIES_PATH=/app/data/cookies.json \\
+    --restart unless-stopped \\
+    xpzouying/xiaohongshu-mcp
+
+首次使用需要扫码登录：
+  python -m src.distribution.xiaohongshu --login
 """
 
+import base64
+import json
 import logging
 import os
+import shutil
 import subprocess
 import time
-import shutil
-from typing import Optional, List
+from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
 # MCP 服务地址
 MCP_SERVER_URL = "http://localhost:18060/mcp"
 
-# 服务进程缓存
+# 项目根目录（从本文件向上4级）
+_FILE_DIR = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_ROOT = os.path.abspath(os.path.join(_FILE_DIR, "../../../.."))
+
+# Docker 挂载目录（放在项目 tmp 目录下）
+MCP_DATA_DIR = os.path.join(_PROJECT_ROOT, "tmp", "xhs", "data")
+MCP_IMAGES_DIR = os.path.join(_PROJECT_ROOT, "tmp", "xhs", "images")
+
+# QR 码保存路径
+QR_CODE_PATH = os.path.join(_PROJECT_ROOT, "tmp", "xhs", "login_qrcode.png")
+
+# 服务进程缓存（非 Docker 方式）
 _mcp_process: Optional[subprocess.Popen] = None
 
 
+# ---------------------------------------------------------------------------
+# 服务可达性 & 启动
+# ---------------------------------------------------------------------------
+
 def _is_service_reachable(timeout: int = 3) -> bool:
-    """检查 MCP HTTP 服务是否可达。"""
+    """检查 MCP HTTP 服务是否可达（通过 initialize 探测）。"""
     try:
         import requests
-
-        response = requests.get(MCP_SERVER_URL, timeout=timeout)
-        # 一些服务即使返回 404/405 也说明端口可达
-        return response.status_code < 500
+        payload = {"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": {"name": "paperagent", "version": "1.0"}
+        }}
+        resp = requests.post(MCP_SERVER_URL, json=payload, timeout=timeout)
+        return resp.status_code < 500
     except Exception:
         return False
 
 
-def _candidate_local_mcp_paths() -> List[str]:
-    """返回可能存在 xiaohongshu-mcp 源码的路径列表。"""
-    module_dir = os.path.dirname(os.path.abspath(__file__))
-    candidates = [
-        os.path.abspath(os.path.join(module_dir, "../../../../xiaohongshu-mcp")),
-        os.path.abspath(os.path.join(module_dir, "../../xiaohongshu-mcp")),
-        os.path.abspath(os.path.join(module_dir, "../../../xiaohongshu-mcp")),
-        os.path.expanduser("~/xiaohongshu-mcp"),
-    ]
-    # 去重且保持顺序
-    seen = set()
-    deduped = []
-    for path in candidates:
-        if path not in seen:
-            deduped.append(path)
-            seen.add(path)
-    return deduped
+def _ensure_data_dirs():
+    """确保 Docker 挂载目录存在。"""
+    os.makedirs(MCP_DATA_DIR, exist_ok=True)
+    os.makedirs(MCP_IMAGES_DIR, exist_ok=True)
 
 
 def _start_service_via_docker() -> bool:
-    """尝试使用 Docker 启动服务。"""
+    """使用 Docker 启动 xiaohongshu-mcp 服务。"""
     global _mcp_process
     if not shutil.which("docker"):
+        logger.warning("未找到 docker 命令，跳过 Docker 启动。")
         return False
 
-    try:
-        docker_proc = subprocess.run(
-            ["docker", "ps", "--format", "{{.Names}}"],
-            capture_output=True,
-            text=True,
+    # 检查 docker 守护进程是否可用
+    check = subprocess.run(
+        ["docker", "ps", "--format", "{{.Names}}"],
+        capture_output=True,
+        text=True,
+    )
+    if check.returncode != 0:
+        logger.warning(
+            "Docker 守护进程不可访问（可能需要 sudo 或添加到 docker 组）。"
+            "请手动运行：sudo usermod -aG docker $USER 后重启会话。"
         )
-        if docker_proc.returncode != 0:
-            logger.warning("检测到 docker 命令不可用或无权限，跳过 Docker 启动。")
-            return False
+        return False
 
-        logger.info("使用 Docker 启动 MCP 服务...")
+    # 检查是否已有同名容器在运行
+    ps_out = check.stdout.strip().splitlines()
+    if "xhs-mcp" in ps_out:
+        logger.info("Docker 容器 xhs-mcp 已在运行")
+        return True
+
+    _ensure_data_dirs()
+
+    logger.info("使用 Docker 启动 xiaohongshu-mcp 服务...")
+    try:
         _mcp_process = subprocess.Popen(
-            ["docker", "run", "--rm", "-p", "18060:18060", "xpzouying/xiaohongshu-mcp"],
+            [
+                "docker", "run", "--rm",
+                "--name", "xhs-mcp",
+                "-p", "18060:18060",
+                "-v", f"{MCP_DATA_DIR}:/app/data",
+                "-v", f"{MCP_IMAGES_DIR}:/app/images",
+                "-e", "COOKIES_PATH=/app/data/cookies.json",
+                "xpzouying/xiaohongshu-mcp",
+            ],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
@@ -87,103 +126,257 @@ def _start_service_via_local_source() -> bool:
     if not shutil.which("go"):
         return False
 
-    for mcp_path in _candidate_local_mcp_paths():
+    candidates = [
+        os.path.abspath(os.path.join(_PROJECT_ROOT, "../xiaohongshu-mcp")),
+        os.path.abspath(os.path.join(_PROJECT_ROOT, "../../xiaohongshu-mcp")),
+        os.path.expanduser("~/xiaohongshu-mcp"),
+    ]
+    for mcp_path in dict.fromkeys(candidates):  # 去重
         if os.path.exists(mcp_path):
             try:
-                logger.info("使用源码启动 MCP 服务: %s", mcp_path)
+                logger.info("使用本地源码启动 MCP 服务: %s", mcp_path)
+                _ensure_data_dirs()
+                env = os.environ.copy()
+                env["COOKIES_PATH"] = os.path.join(MCP_DATA_DIR, "cookies.json")
                 _mcp_process = subprocess.Popen(
                     ["go", "run", "."],
                     cwd=mcp_path,
+                    env=env,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                 )
                 return True
             except Exception as exc:
-                logger.warning("源码启动失败 (%s): %s", mcp_path, exc)
-
+                logger.warning("本地源码启动失败 (%s): %s", mcp_path, exc)
     return False
 
 
-def _ensure_mcp_service():
-    """确保 MCP 服务已启动"""
-    global _mcp_process
-
-    # 检查服务是否已运行
+def ensure_mcp_service() -> bool:
+    """确保 MCP 服务已启动，返回是否成功。"""
     if _is_service_reachable(timeout=5):
         logger.info("MCP 服务已运行")
         return True
 
-    # 服务未运行，尝试启动
     logger.warning("MCP 服务未运行，正在启动...")
 
-    started = _start_service_via_docker()
+    started = _start_service_via_docker() or _start_service_via_local_source()
     if not started:
-        started = _start_service_via_local_source()
-    if not started:
-        logger.error("自动启动失败：Docker 不可用且未找到可运行的本地 xiaohongshu-mcp 源码。")
-        logger.info("请手动启动: docker run -p 18060:18060 xpzouying/xiaohongshu-mcp")
+        logger.error(
+            "自动启动失败。请手动运行:\n"
+            "  mkdir -p tmp/xhs/data tmp/xhs/images\n"
+            "  docker run -d --name xhs-mcp -p 18060:18060 \\\n"
+            "    -v \"$(pwd)/tmp/xhs/data:/app/data\" \\\n"
+            "    -v \"$(pwd)/tmp/xhs/images:/app/images\" \\\n"
+            "    -e COOKIES_PATH=/app/data/cookies.json \\\n"
+            "    xpzouying/xiaohongshu-mcp"
+        )
         return False
 
-    # 等待服务启动
     for i in range(30):
         time.sleep(2)
         if _is_service_reachable(timeout=5):
             logger.info("MCP 服务启动成功!")
             return True
-        logger.info(f"等待服务启动... ({i+1}/30)")
+        logger.info("等待服务启动... (%d/30)", i + 1)
 
     logger.error("MCP 服务启动超时")
     return False
 
 
-class XiaohongshuMCPUploader:
-    """小红书 MCP 上传器 (HTTP 方式)"""
+# ---------------------------------------------------------------------------
+# MCP JSON-RPC 底层调用
+# ---------------------------------------------------------------------------
 
-    def __init__(self):
-        self.session = None
+def _call_tool(tool_name: str, arguments: dict = None) -> Optional[dict]:
+    """
+    向 MCP 服务器发起 tools/call 请求，返回解析后的结果字典或 None。
 
-    def connect(self):
-        """确保已连接到 MCP 服务"""
-        _ensure_mcp_service()
-        return self
+    MCP HTTP 标准格式：
+        method = "tools/call"
+        params = {"name": <tool>, "arguments": <args>}
+    """
+    import requests
 
-    def _request(self, method: str, params: dict = None) -> Optional[dict]:
-        """向 MCP 服务器发送请求"""
-        import requests
+    if not ensure_mcp_service():
+        return None
 
-        if not _ensure_mcp_service():
-            return None
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": tool_name,
+            "arguments": arguments or {},
+        },
+    }
 
-        payload = {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": method,
-            "params": params or {}
-        }
+    try:
+        resp = requests.post(MCP_SERVER_URL, json=payload, timeout=60)
+        resp.raise_for_status()
+        body = resp.json()
+    except requests.exceptions.ConnectionError:
+        logger.error("无法连接到 MCP 服务: %s", MCP_SERVER_URL)
+        return None
+    except Exception as exc:
+        logger.error("HTTP 请求失败: %s", exc)
+        return None
 
-        try:
-            response = requests.post(MCP_SERVER_URL, json=payload, timeout=60)
-            result = response.json()
+    if "error" in body:
+        logger.error("MCP 返回错误: %s", body["error"])
+        return None
 
-            if "error" in result:
-                logger.error(f"MCP 错误: {result['error']}")
-                return None
+    result = body.get("result", {})
 
-            return result.get("result")
-        except requests.exceptions.ConnectionError:
-            logger.error(f"无法连接到 MCP 服务: {MCP_SERVER_URL}")
-            return None
-        except Exception as e:
-            logger.error(f"请求失败: {e}")
-            return None
+    # MCP 规范返回 {content: [...], isError: bool}
+    if isinstance(result, dict) and result.get("isError"):
+        content_list = result.get("content", [])
+        err_text = content_list[0].get("text", "") if content_list else ""
+        logger.error("工具执行错误: %s", err_text)
+        return None
 
-    def check_login_status(self) -> bool:
-        """检查登录状态"""
-        result = self._request("check_login_status")
-        if result:
-            logger.info(f"登录状态: {result}")
-            return result.get("is_logged_in", False)
+    return result
+
+
+def _extract_text(result: dict) -> Optional[str]:
+    """从 tools/call 结果中提取第一个 text 内容。"""
+    if not isinstance(result, dict):
+        return None
+    for item in result.get("content", []):
+        if item.get("type") == "text":
+            return item.get("text")
+    return None
+
+
+def _extract_image_bytes(result: dict) -> Optional[bytes]:
+    """从 tools/call 结果中提取第一个 image 的原始字节。"""
+    if not isinstance(result, dict):
+        return None
+    for item in result.get("content", []):
+        if item.get("type") == "image":
+            data = item.get("data", "")
+            try:
+                return base64.b64decode(data)
+            except Exception as exc:
+                logger.warning("base64 解码失败: %s", exc)
+    return None
+
+
+# ---------------------------------------------------------------------------
+# 登录管理
+# ---------------------------------------------------------------------------
+
+def get_login_qrcode() -> Optional[str]:
+    """
+    获取小红书登录二维码，保存到本地并返回文件路径。
+
+    二维码保存路径：tmp/xhs/login_qrcode.png
+    """
+    result = _call_tool("get_login_qrcode")
+    if result is None:
+        return None
+
+    image_bytes = _extract_image_bytes(result)
+    if image_bytes:
+        os.makedirs(os.path.dirname(QR_CODE_PATH), exist_ok=True)
+        with open(QR_CODE_PATH, "wb") as f:
+            f.write(image_bytes)
+        logger.info("二维码已保存: %s", QR_CODE_PATH)
+        return QR_CODE_PATH
+
+    # 有些版本返回 URL 而非图片
+    text = _extract_text(result)
+    if text:
+        logger.info("登录二维码信息: %s", text)
+        return text
+
+    logger.error("无法获取登录二维码")
+    return None
+
+
+def check_login_status() -> bool:
+    """检查小红书登录状态，返回 True 表示已登录。"""
+    result = _call_tool("check_login_status")
+    if result is None:
         return False
+
+    text = _extract_text(result)
+    if text:
+        try:
+            data = json.loads(text)
+            logged_in = data.get("is_logged_in", data.get("logged_in", False))
+            logger.info("登录状态: %s", "已登录" if logged_in else "未登录")
+            return bool(logged_in)
+        except json.JSONDecodeError:
+            # 有些实现直接返回布尔字符串
+            logged_in = text.strip().lower() in ("true", "1", "yes", "logged_in")
+            return logged_in
+
+    return False
+
+
+def login_with_qrcode() -> bool:
+    """
+    引导用户完成扫码登录。
+
+    步骤：
+    1. 获取二维码并保存
+    2. 打印文件路径 / 提示用户扫码
+    3. 轮询登录状态，最长等待 3 分钟
+
+    Returns:
+        True 登录成功，False 超时或失败
+    """
+    logger.info("=" * 60)
+    logger.info("小红书扫码登录")
+    logger.info("=" * 60)
+
+    qr_path = get_login_qrcode()
+    if not qr_path:
+        logger.error("获取二维码失败，请检查 MCP 服务是否正常运行")
+        return False
+
+    # 如果是本地文件，给出明确路径
+    if os.path.exists(str(qr_path)):
+        print(f"\n请使用小红书 App 扫描以下二维码完成登录：")
+        print(f"  二维码图片: {qr_path}\n")
+        # 尝试用系统默认程序打开图片（非阻塞）
+        try:
+            import subprocess as _sp
+            _sp.Popen(["xdg-open", qr_path], stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+        except Exception:
+            pass
+    else:
+        print(f"\n请访问以下链接完成登录（扫码或点击）：\n  {qr_path}\n")
+
+    # 轮询登录状态（最多 180 秒）
+    for i in range(36):
+        time.sleep(5)
+        if check_login_status():
+            logger.info("扫码登录成功!")
+            return True
+        logger.info("等待扫码... (%d/36)", i + 1)
+
+    logger.error("登录超时，请重试")
+    return False
+
+
+# ---------------------------------------------------------------------------
+# 上传器
+# ---------------------------------------------------------------------------
+
+class XiaohongshuMCPUploader:
+    """小红书 MCP 上传器（HTTP JSON-RPC 方式）。"""
+
+    def connect(self) -> "XiaohongshuMCPUploader":
+        """确保 MCP 服务可达并已登录；如未登录则引导扫码。"""
+        if not ensure_mcp_service():
+            raise RuntimeError("MCP 服务未启动，无法上传")
+
+        if not check_login_status():
+            logged_in = login_with_qrcode()
+            if not logged_in:
+                raise RuntimeError("未登录小红书，无法上传")
+        return self
 
     def publish_note(
         self,
@@ -191,103 +384,103 @@ class XiaohongshuMCPUploader:
         content: str,
         images: List[str],
         visible_level: str = "public",
-        is_original: bool = True
+        is_original: bool = True,
+        tags: Optional[List[str]] = None,
     ) -> Optional[dict]:
-        """发布图文笔记"""
-        # 标题校验
-        if len(title) > 20:
-            logger.warning(f"标题超过20字，将截取前20字: {title[:20]}")
-            title = title[:20]
+        """
+        发布图文笔记（publish_content 工具）。
 
-        # 内容校验
+        Args:
+            title: 标题（最多 20 字）
+            content: 正文（最多 1000 字）
+            images: 图片绝对路径列表（1~9 张）
+            visible_level: 可见范围 public / private
+            is_original: 是否声明原创
+            tags: 话题标签列表（可选）
+        """
+        if len(title) > 20:
+            logger.warning("标题超过20字，截取前20字")
+            title = title[:20]
         if len(content) > 1000:
-            logger.warning(f"内容超过1000字，将截取")
+            logger.warning("内容超过1000字，截取")
             content = content[:1000]
 
-        params = {
+        arguments: dict = {
             "title": title,
             "content": content,
             "images": images,
-            "visible_level": visible_level,
-            "is_original": is_original
+            "visibility": visible_level,
+            "is_original": is_original,
         }
+        if tags:
+            arguments["tags"] = tags
 
-        logger.info(f"发布图文笔记: {title}")
-        return self._request("publish_note", params)
+        logger.info("发布图文笔记: %s（%d 张图）", title, len(images))
+        result = _call_tool("publish_content", arguments)
+        if result is None:
+            return None
+
+        text = _extract_text(result)
+        if text:
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError:
+                return {"raw": text}
+        return result
 
     def publish_video(
         self,
         title: str,
         content: str,
         video_path: str,
-        cover_path: str = None,
+        cover_path: Optional[str] = None,
         visible_level: str = "public",
-        is_original: bool = True
+        is_original: bool = True,
     ) -> Optional[dict]:
-        """发布视频"""
+        """发布视频笔记（publish_with_video 工具）。"""
         if len(title) > 20:
             title = title[:20]
 
-        params = {
+        arguments: dict = {
             "title": title,
             "content": content,
             "video_path": video_path,
-            "visible_level": visible_level,
-            "is_original": is_original
+            "visibility": visible_level,
+            "is_original": is_original,
         }
-
         if cover_path:
-            params["cover_path"] = cover_path
+            arguments["cover_path"] = cover_path
 
-        logger.info(f"发布视频笔记: {title}")
-        return self._request("publish_video", params)
+        logger.info("发布视频笔记: %s", title)
+        result = _call_tool("publish_with_video", arguments)
+        if result is None:
+            return None
 
-    def search_notes(self, keyword: str, page: int = 1) -> Optional[dict]:
-        """搜索内容"""
-        return self._request("search", {"keyword": keyword, "page": page})
+        text = _extract_text(result)
+        if text:
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError:
+                return {"raw": text}
+        return result
 
     def get_user_profile(self) -> Optional[dict]:
-        """获取用户信息"""
-        return self._request("get_user_profile")
+        """获取当前登录用户信息。"""
+        result = _call_tool("user_profile")
+        if result is None:
+            return None
+        text = _extract_text(result)
+        if text:
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError:
+                return {"raw": text}
+        return result
 
 
-class XiaohongshuMCPStdio:
-    """小红书 MCP 上传器 (stdio 方式 - 如果支持)"""
-
-    def __init__(self):
-        self.session = None
-
-    async def connect(self):
-        """连接到 MCP 服务器"""
-        try:
-            from mcp.client.stdio import stdio_client
-            from mcp import ClientSession
-
-            # 尝试找到 xiaohongshu-mcp
-            import shutil
-            mcp_path = shutil.which("xiaohongshu-mcp")
-
-            if mcp_path:
-                from mcp import StdioServerParameters
-                server_params = StdioServerParameters(command=mcp_path, args=[])
-
-                async with stdio_client(server_params) as (stdio, write):
-                    self.session = ClientSession(stdio, write)
-                    async with self.session as session:
-                        await session.initialize()
-                        logger.info("已连接到小红书 MCP 服务器")
-                        return True
-            return False
-        except Exception as e:
-            logger.error(f"连接失败: {e}")
-            return False
-
-    async def call_tool(self, name: str, params: dict = None):
-        """调用工具"""
-        if self.session:
-            return await self.session.call_tool(name, params or {})
-        return None
-
+# ---------------------------------------------------------------------------
+# 模块级便捷接口（与 orchestrator 兼容）
+# ---------------------------------------------------------------------------
 
 def upload_to_xiaohongshu(
     video_path: str = None,
@@ -295,101 +488,127 @@ def upload_to_xiaohongshu(
     title: str = "",
     content: str = "",
     images: List[str] = None,
-    is_video: bool = False
+    is_video: bool = False,
+    tags: Optional[List[str]] = None,
 ) -> Optional[dict]:
     """
-    上传内容到小红书
+    上传内容到小红书。
 
     Args:
-        video_path: 视频文件路径
+        video_path: 视频文件路径（视频模式）
         cover_path: 封面图片路径
         title: 标题
         content: 正文内容
         images: 图片列表（图文模式）
         is_video: 是否为视频模式
+        tags: 话题标签（可选）
 
     Returns:
-        发布结果 或 None
+        发布结果字典 或 None（失败）
     """
     uploader = XiaohongshuMCPUploader()
-
-    # 检查登录状态
-    if not uploader.check_login_status():
-        logger.error("未登录小红书")
-        return None
+    uploader.connect()  # 如未登录会自动引导扫码
 
     if is_video and video_path:
-        # 视频模式
         return uploader.publish_video(
             title=title,
             content=content,
             video_path=video_path,
-            cover_path=cover_path
+            cover_path=cover_path,
         )
     elif images:
-        # 图文模式
         return uploader.publish_note(
             title=title,
             content=content,
-            images=images
+            images=images,
+            tags=tags,
         )
     else:
-        logger.error("未指定视频或图片")
+        logger.error("未指定视频或图片，无法上传")
         return None
 
 
-def publish_note(title, content, images, visible_level="public", is_original=True):
-    """发布图文笔记"""
+def publish_note(
+    title: str,
+    content: str,
+    images: List[str],
+    visible_level: str = "public",
+    is_original: bool = True,
+    tags: Optional[List[str]] = None,
+) -> Optional[dict]:
+    """发布图文笔记（orchestrator 兼容接口）。"""
     return upload_to_xiaohongshu(
         title=title,
         content=content,
         images=images,
-        is_video=False
+        is_video=False,
+        tags=tags,
     )
 
 
-def publish_video(title, content, video_path, cover_path=None):
-    """发布视频"""
+def publish_video(
+    title: str,
+    content: str,
+    video_path: str,
+    cover_path: Optional[str] = None,
+) -> Optional[dict]:
+    """发布视频（orchestrator 兼容接口）。"""
     return upload_to_xiaohongshu(
         title=title,
         content=content,
         video_path=video_path,
         cover_path=cover_path,
-        is_video=True
+        is_video=True,
     )
 
 
-def check_login_status() -> bool:
-    """模块级登录状态检查接口"""
-    uploader = XiaohongshuMCPUploader()
-    return uploader.check_login_status()
-
+# ---------------------------------------------------------------------------
+# CLI 入口（手动测试 / 登录）
+# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
+    import argparse
     import datetime
 
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+    )
 
-    logger.info("=" * 50)
-    logger.info("小红书 MCP 上传测试")
-    logger.info("=" * 50)
+    parser = argparse.ArgumentParser(description="小红书 MCP 上传工具")
+    parser.add_argument("--login", action="store_true", help="引导扫码登录")
+    parser.add_argument("--status", action="store_true", help="检查登录状态")
+    parser.add_argument("--test-note", action="store_true", help="发布测试图文")
+    args = parser.parse_args()
 
-    # 检查登录状态
-    print("\n检查登录状态...")
-    uploader = XiaohongshuMCPUploader()
-    if not uploader.check_login_status():
-        logger.info("请扫描浏览器中出现的二维码完成登录")
-        logger.info("服务运行在: http://localhost:18060/mcp")
-    else:
-        # 测试发布图文
-        logger.info("\n测试发布图文笔记...")
-        result = uploader.publish_note(
-            title=f"MCP测试笔记-{datetime.datetime.now().strftime('%H:%M')}",
-            content="这是一个通过 MCP 自动发布的小红书笔记测试。",
-            images=["/home/jdh/Projects/VlogCutter/JushenRenji/output/daily_summary.png"]
+    if not ensure_mcp_service():
+        print("\n[ERROR] MCP 服务未启动，请先运行 Docker：")
+        print(
+            "  mkdir -p tmp/xhs/data tmp/xhs/images\n"
+            '  docker run -d --name xhs-mcp -p 18060:18060 \\\n'
+            '    -v "$(pwd)/tmp/xhs/data:/app/data" \\\n'
+            '    -v "$(pwd)/tmp/xhs/images:/app/images" \\\n'
+            '    -e COOKIES_PATH=/app/data/cookies.json \\\n'
+            '    xpzouying/xiaohongshu-mcp'
         )
+        exit(1)
 
-        if result:
-            logger.info(f"发布成功! Note ID: {result.get('note_id')}")
-        else:
-            logger.error("发布失败")
+    if args.login:
+        success = login_with_qrcode()
+        print("登录成功!" if success else "登录失败")
+    elif args.status:
+        logged_in = check_login_status()
+        print(f"登录状态: {'已登录' if logged_in else '未登录'}")
+    elif args.test_note:
+        test_image = os.path.join(_PROJECT_ROOT, "output", "daily_summary.png")
+        if not os.path.exists(test_image):
+            print(f"测试图片不存在: {test_image}")
+            exit(1)
+        result = publish_note(
+            title=f"MCP测试-{datetime.datetime.now().strftime('%H:%M')}",
+            content="这是一个通过 MCP 自动发布的小红书图文测试。",
+            images=[test_image],
+        )
+        print(f"发布结果: {result}")
+    else:
+        parser.print_help()
