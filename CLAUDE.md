@@ -1,7 +1,14 @@
 # CLAUDE.md
-
 本文件为 Claude Code (claude.ai/code) 在此仓库中工作时提供指导。
 
+# 全局规则
+
+- 全程使用中文交流
+- 遇到不知道的接口必须要上网搜索或者问我
+- 每次更新代码也要更新readme
+- 每次更新代码要创建对应的单元测试代码
+- 所有prompt 必须要更新在./src/llm_tools/prompts.py 便于随时更改
+- mcp使用node v
 ## 项目概述
 
 论文转视频流水线：从 arXiv 或本地 PDF 提取文本和图片，使用 LLM 生成脚本，通过 DashScope TTS 合成语音，最后使用 moviepy 合成视频。支持上传到 Bilibili 等平台。

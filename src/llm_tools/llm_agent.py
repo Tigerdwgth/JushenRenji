@@ -92,12 +92,29 @@ def initialize_agent():
         base_url=url
     )
     # rm -rf ./cache on windows
-    if os.path.exists("./cache"):
-        shutil.rmtree("./cache")
-    os.makedirs("./cache")
+    # if os.path.exists("./cache"):
+    #     shutil.rmtree("./cache")
+    os.makedirs("./cache", exist_ok=True)
     return MANUALLY_EXTRACT_IMAGES, model, client
 
-MANUALLY_EXTRACT_IMAGES, model,client= initialize_agent()
+MANUALLY_EXTRACT_IMAGES, model, client = initialize_agent()
+
+
+def _parse_json_response(raw: str):
+    """尝试从 LLM 返回中解析 JSON 对象。"""
+    if not raw:
+        return {}
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", raw, re.S)
+        if match:
+            try:
+                return json.loads(match.group())
+            except json.JSONDecodeError:
+                pass
+    logging.warning("无法解析为 JSON: %s", raw[:2000])
+    return {}
 
 def get_prompt(func_name, text=None):
     """
@@ -134,6 +151,11 @@ def generate_origin_title(text):
 def generate_video_proceedings(text):
     prompt = get_prompt(inspect.currentframe().f_code.co_name)
     return create_chat_completion(prompt, text)
+
+def generate_structured_video_plan(text):
+    prompt = get_prompt(inspect.currentframe().f_code.co_name)
+    raw = create_chat_completion(prompt, text)
+    return _parse_json_response(raw)
 
 def get_paper_demo_website(text):
     prompt = get_prompt(inspect.currentframe().f_code.co_name)
@@ -176,6 +198,110 @@ def create_chat_completion(prompt, user_content=None):
 def get_captions_from_page(text: str = ''):
     prompt = get_prompt(inspect.currentframe().f_code.co_name, text)
     response = create_chat_completion(prompt, text)
-    response2list = json.loads(response)
+
+    # 清理LLM返回的内容，移除markdown代码块标记
+    cleaned_response = response.strip()
+    if cleaned_response.startswith("```json"):
+        cleaned_response = cleaned_response[7:]
+    if cleaned_response.endswith("```"):
+        cleaned_response = cleaned_response[:-3]
+    cleaned_response = cleaned_response.strip()
+
+    response2list = json.loads(cleaned_response)
     return response2list
+
+def extract_captions_to_dict(text: str = ''):
+    """
+    从文本中提取图片和表格标题，返回字典格式
+    
+    参数:
+    - text: 包含图片和表格标题的文本
+    
+    返回:
+    - dict: {"fig_1": "图片标题1", "tab_1": "表格标题1", ...}
+    """
+    prompt = get_prompt(inspect.currentframe().f_code.co_name, text)
+    response = create_chat_completion(prompt, text)
+    
+    # 清理LLM返回的内容，移除markdown代码块标记
+    cleaned_response = response.strip()
+    if cleaned_response.startswith("```json"):
+        cleaned_response = cleaned_response[7:]
+    if cleaned_response.endswith("```"):
+        cleaned_response = cleaned_response[:-3]
+    cleaned_response = cleaned_response.strip()
+
+    try:
+        # 尝试直接解析为字典
+        result_dict = json.loads(cleaned_response)
+        if isinstance(result_dict, dict):
+            return result_dict
+    except json.JSONDecodeError:
+        logging.warning("LLM返回的不是有效JSON，尝试解析为列表格式")
+    
+    try:
+        # 尝试解析为原有的列表格式 [[图片标题...], [表格标题...]]
+        response_list = json.loads(cleaned_response)
+        if isinstance(response_list, list) and len(response_list) == 2:
+            fig_captions, tab_captions = response_list
+            result_dict = {}
+            
+            # 处理图片标题
+            for i, caption in enumerate(fig_captions, 1):
+                if caption.strip():
+                    result_dict[f"fig_{i}"] = caption.strip()
+            
+            # 处理表格标题
+            for i, caption in enumerate(tab_captions, 1):
+                if caption.strip():
+                    result_dict[f"tab_{i}"] = caption.strip()
+            
+            return result_dict
+    except (json.JSONDecodeError, ValueError, IndexError) as e:
+        logging.error(f"解析标题失败: {e}")
+        logging.error(f"LLM返回内容: {response}")
+        return {}
+
+
+def add_context_to_image_explanations(image_explanations):
+    """为图像解释添加上下文和过渡语句
+
+    Args:
+        image_explanations: 图像解释列表，每个元素包含detailed_explanation等字段
+
+    Returns:
+        list: 添加了context和transition的图像解释列表
+    """
+    import json
+
+    if not image_explanations or len(image_explanations) == 0:
+        return image_explanations
+
+    # 将图像解释转换为文本格式供LLM处理
+    explanations_text = json.dumps(image_explanations, ensure_ascii=False, indent=2)
+
+    prompt = get_prompt(inspect.currentframe().f_code.co_name)
+    response = create_chat_completion(prompt, explanations_text)
+
+    # 清理LLM返回的内容，移除markdown代码块标记
+    cleaned_response = response.strip()
+    if cleaned_response.startswith("```json"):
+        cleaned_response = cleaned_response[7:]
+    if cleaned_response.endswith("```"):
+        cleaned_response = cleaned_response[:-3]
+    cleaned_response = cleaned_response.strip()
+
+    try:
+        # 解析LLM返回的结果
+        updated_explanations = json.loads(cleaned_response)
+        if isinstance(updated_explanations, list) and len(updated_explanations) == len(image_explanations):
+            logging.info("成功为图像解释添加上下文和过渡语句")
+            return updated_explanations
+        else:
+            logging.warning("LLM返回结果格式不正确，保持原始解释")
+            return image_explanations
+    except json.JSONDecodeError as e:
+        logging.error(f"解析LLM返回的JSON失败: {e}")
+        logging.error(f"LLM返回内容: {response}")
+        return image_explanations
 

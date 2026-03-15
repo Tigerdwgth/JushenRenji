@@ -1,4 +1,4 @@
-import sys
+import os
 import datetime
 import logging
 import argparse
@@ -45,7 +45,7 @@ def parse_args():
         default="bilibili,xiaohongshu",
         help="Upload platforms, comma-separated: bilibili,xiaohongshu or none"
     )
-    
+
     return parser.parse_args()
 
 
@@ -54,16 +54,24 @@ if __name__ == "__main__":
     args= parse_args()
     filename = args.filename
     language = args.output_language
+    video_length = args.video_length
     platforms = parse_platforms(args.platforms)
-    
+
     try:
+        if not filename:
+            raise ValueError("参数 --filename 不能为空，例如 --filename cs.RO")
         today=datetime.datetime.now()
         yesterday=today-datetime.timedelta(days=400)
         yesterday=yesterday.strftime(r"%Y-%m-%d")
         today=today.strftime(r"%Y-%m-%d")
         logging.info("今天是%s,昨天是%s", today, yesterday)
-        # path,titles=generate_daily_arxiv_summary(query='cs.RO',max_papers=100,date=str(yesterday))
-        path,titles,cn_titles=generate_daily_arxiv_summary(query=filename,max_papers=1,date=str(yesterday),long_or_short="long")
+        path,titles,cn_titles=generate_daily_arxiv_summary(query=filename,max_papers=1,date=str(yesterday),long_or_short=video_length)
+        if not path or not os.path.exists(path):
+            raise RuntimeError(f"视频生成失败，输出文件不存在: {path}")
+        logging.info("本地视频生成完成: %s", path)
+        logging.info("英文标题列表: %s", titles)
+        logging.info("中文标题列表: %s", cn_titles)
+        print(path)
 
         video_path = path
         cover_path = path.replace(".mp4", ".png")

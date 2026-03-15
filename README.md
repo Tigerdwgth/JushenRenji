@@ -37,7 +37,7 @@
 conda create -n paperagent python=3.10
 conda activate paperagent
 pip install -r requirements.txt
-pip install mcp  # MCP 客户端库
+pip install biliup  # B站上传
 pip3 install torch torchvision torchaudio  # Linux
 pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126  # Windows
 pip install -e .
@@ -62,48 +62,45 @@ with open(tmp_name, "rb") as output_file:
 
 # 多平台上传功能
 
-## B站 MCP 上传方式
+## B站上传（biliup Cookie 方式）
 
-### 1. 安装 Node.js
+### 1. 安装依赖
 ```bash
-conda install conda-forge::nodejs
-nvm use 18  # 必须使用 Node 18
+pip install biliup
 ```
 
-### 2. 安装 MCP Bilibili 服务
-```bash
-npm install -g @mcpcn/mcp-bilibili
+### 2. 配置 Cookie
+在浏览器中登录 bilibili.com，打开 DevTools (F12) → Application → Cookies，复制以下 4 个值填入 `config.yaml`：
+
+```yaml
+bilibili_cookies:
+  sessdata: "<SESSDATA>"
+  bili_jct: "<bili_jct>"
+  dedeuserid: "<DedeUserID>"
+  dedeuserid_ckmd5: "<DedeUserID__ckMd5>"
 ```
 
-### 3. 安装 MCP Python 库
-```bash
-pip install mcp
-```
-
-### 4. 使用示例
+### 3. 使用示例
 ```python
-from src.distribution.bilibili import upload_video_to_bilibili_mcp
+from src.distribution.bilibili import upload
 
-# 上传视频
-result = upload_video_to_bilibili_mcp(
+result = upload(
     video_path="/path/to/video.mp4",
-    video_title="视频标题",
-    video_tags="标签1,标签2",
-    video_description="视频描述",
+    title="视频标题",
+    tags="标签1,标签2",
+    desc="视频描述",
     cover_path="/path/to/cover.png",
-    tid=188  # 科技分区
+    tid=188  # 分区ID
 )
 
 if result:
     print(f"上传成功! BV号: {result}")
 ```
 
-### 5. 首次授权流程
-首次运行时会自动：
-1. 打开浏览器显示授权二维码
-2. 扫码登录B站
-3. 获取 `state` 值
-4. 终端输入 `state` 完成授权
+### 4. 命令行测试
+```bash
+python -m src.distribution.bilibili --test-upload --video ./output/video.mp4 --title "测试" --tags "测试"
+```
 
 ---
 

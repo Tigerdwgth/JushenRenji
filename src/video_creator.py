@@ -129,6 +129,16 @@ def _split_into_sentences(text, max_chars=30):
     return result
 
 
+def _wrap_text(text, max_chars=20):
+    """在每max_chars个字符后添加换行符，防止字幕溢出"""
+    if not text or len(text) <= max_chars:
+        return text
+    result = []
+    for i in range(0, len(text), max_chars):
+        result.append(text[i:i+max_chars])
+    return '\n'.join(result)
+
+
 class VideoCreator:
     def __init__(self, images, text, video_clips=None, image_explanations=None):
         """images: list of PIL.Image
@@ -203,6 +213,7 @@ class VideoCreator:
                     per_sentence_dur = duration / len(sentences)
                     for i, sentence in enumerate(sentences):
                         sentence_start = start + i * per_sentence_dur
+                        sentence = _wrap_text(sentence)
                         tclip = TextClip(text=sentence,
                                          font_size=48,
                                          size=(1920, 1080),
@@ -218,6 +229,7 @@ class VideoCreator:
                     continue
 
             # 如果不需要分割或分割失败，直接创建clip
+            txt = _wrap_text(txt)
             tclip = TextClip(text=txt,
                              font_size=48,
                              size=(1920, 1080),

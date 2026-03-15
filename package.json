@@ -15,5 +15,8 @@
   "bugs": {
     "url": "https://github.com/Tigerdwgth/JushenRenji/issues"
   },
-  "homepage": "https://github.com/Tigerdwgth/JushenRenji#readme"
+  "homepage": "https://github.com/Tigerdwgth/JushenRenji#readme",
+  "dependencies": {
+    "@openai/codex": "^0.106.0"
+  }
 }

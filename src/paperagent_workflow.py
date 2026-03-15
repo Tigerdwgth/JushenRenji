@@ -213,15 +213,15 @@ def run_pdf_to_video_pipeline(paper=None,pdf_file_path=None,demowebsite=None,en_
     video_creator = VideoCreator(images, summary, videos, image_explanations=image_explanations)
     save_path = f"./output/{title}.mp4"
     video_path = video_creator.create_video(save_path)
+    if not video_path or not os.path.exists(video_path):
+        raise RuntimeError(f"视频创建失败，输出文件不存在: {save_path}")
     generate_cover('./pic/1.png', title, video_path.replace(".mp4",".png"))
     logging.info("视频已成功创建，路径为: %s", video_path)
     #convert to absolute path
     video_path = os.path.abspath(video_path)
-    # 上传到B站
-    
-    upload_video_to_bilibili(video_path, title, "人工智能,具身智能,机器人,模仿学习,VLA,具身,机械臂,计算机视觉", en_title, generate_video_proceedings(str(paper)) if paper else prefix)
-    logging.info("视频上传成功！")
+    logging.info("已完成本地视频生成，主流程不再自动上传。")
     logging.info("程序结束")
+    return video_path
 
 def call_llm(text):
     with ThreadPoolExecutor() as executor:
@@ -338,6 +338,8 @@ def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().str
     logging.info("开始生成每日 arXiv 论文总结视频")
     # 获取最新的论文
     papers = get_paper_from_arxiv(query=query)
+    if papers is None:
+        raise RuntimeError(f"拉取 arXiv 论文失败，query={query}")
     logging.info(f"找到 {len(papers)} 篇论文,正在筛选...")
     # 过滤日期
     papers = filter_papers_by_date(papers, date)
@@ -345,22 +347,18 @@ def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().str
     if len(papers) > max_papers:
         papers = papers[:max_papers]
         logging.info(f"限制论文数量为 {max_papers} 篇")
-    # 如果没有找到符合条件的论文，返回
+    # 如果没有找到符合条件的论文，抛出异常
     cn_titles=[]
     if not papers:
-        logging.warning("未找到符合条件的论文")
-        try:
-            download_if_remote(query)
-        except Exception as e:
-            logging.error(f"下载或处理 PDF 文件时发生错误: {e}")
-        return
+        raise RuntimeError(f"未找到符合条件的论文，query={query}, date={date}")
     else:
         logging.info(f"找到 {len(papers)} 篇论文")
         logging.info(f"日期: {date}")
         logging.info([paper.title for paper in papers])  # 使用 Paper 数据类的属性
 
-    # 初始化视频片段列表
-    video_clips = []
+    # 初始化成功生成的视频片段路径列表
+    generated_part_paths = []
+    processed_papers = []
     origin_titles = []
 
     for paper_idx, paper in enumerate(papers):
@@ -462,25 +460,32 @@ def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().str
         video_creator = VideoCreator(images, short_summary, video_clips=get_videoclips(text, deom_website), image_explanations=image_explanations_part)
         part_save_path = f"./output/part_{paper_idx + 1}.mp4"
         part_video_path = video_creator.create_video(part_save_path)
-        video_clips.append(VideoFileClip(part_video_path))
+        if not part_video_path or not os.path.exists(part_video_path):
+            raise RuntimeError(f"视频片段生成失败: {part_save_path}")
+        generated_part_paths.append(part_video_path)
+        processed_papers.append(paper)
         origin_titles.append(origin_title)
     
-    #如果只有一篇论文，重命名part1为论文名.mp4
+    # 如果没有任何可用视频片段，抛出异常
+    if not generated_part_paths:
+        raise RuntimeError("未生成任何可用视频片段，无法创建视频")
+
+    #如果只有一篇论文，重命名part1为论文名.mp4，并返回统一三元组
     if len(papers) == 1:
-        part_save_path = f"./output/part_1.mp4"
-        part_video_path= part_save_path
+        part_video_path = generated_part_paths[0]
         date_str=datetime.datetime.now().strftime(r"%Y-%m-%d")
-        new_part_video_path = f"./output/{date_str}_{cn_titles[0]}.mp4"
-        os.rename(part_video_path, new_part_video_path)
-        return
-        # video_clips[0] = VideoFileClip(new_part_video_path)
-        # output_filename = new_part_video_path
-        
-        
-    # 合并所有论文的视频片段
-    if not video_clips:
-        logging.warning("未生成任何视频片段， 无法创建日报视频")
-        return
+        title_for_filename = cn_titles[0] if cn_titles else "daily_summary"
+        title_for_filename = re.sub(r'[\\/:*?"<>|]', '', title_for_filename).strip() or "daily_summary"
+        new_part_video_path = os.path.abspath(f"./output/{date_str}_{title_for_filename}.mp4")
+        if os.path.abspath(part_video_path) != new_part_video_path:
+            os.replace(part_video_path, new_part_video_path)
+        if not os.path.exists(new_part_video_path):
+            raise RuntimeError(f"单篇视频输出失败: {new_part_video_path}")
+        logging.info(f"单篇视频已成功生成，路径为: {new_part_video_path}")
+        return new_part_video_path, origin_titles, cn_titles
+
+    # 合并所有论文的视频片段（至少一段）
+    video_clips = [VideoFileClip(path) for path in generated_part_paths]
     
     logging.info("合并所有论文的视频片段")
     # 将论文的标题以字幕的形式，显示在每段视频的最上方
@@ -493,7 +498,7 @@ def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().str
                  vertical_align='top',
                  stroke_color='black', 
                  stroke_width=3, 
-                duration=video_clips[idx].duration) for idx, _ in enumerate(papers)]
+                duration=video_clips[idx].duration) for idx, _ in enumerate(processed_papers)]
     final_tiles = concatenate_videoclips(title_clips, method="compose")
     final_video = concatenate_videoclips(video_clips, method="compose")
     final_video = CompositeVideoClip([final_video, final_tiles])
@@ -501,5 +506,7 @@ def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().str
     
     # 转换为绝对路径
     final_video_path = os.path.abspath(output_filename)
+    if not os.path.exists(final_video_path):
+        raise RuntimeError(f"日报视频输出失败: {final_video_path}")
     logging.info(f"日报视频已成功生成，路径为: {final_video_path}")
     return final_video_path, origin_titles,cn_titles
