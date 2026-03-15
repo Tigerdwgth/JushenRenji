@@ -30,6 +30,9 @@ python src/main.py --filename "cs.RO" --output_language "zh"
 
 # 完整选项
 python src/main.py --filename "{query}" --video_length "long" --output_language "zh"
+
+# 控制视频时长（默认300秒）
+python src/main.py --filename "{query}" --target_duration 180 --platforms none
 ```
 
 **前置要求：**

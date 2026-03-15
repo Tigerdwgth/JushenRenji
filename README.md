@@ -174,12 +174,16 @@ python src/main.py --filename "{papername}" --platforms bilibili
 python src/main.py --filename "{papername}" --platforms xiaohongshu
 
 # 禁用上传，仅生成本地视频
-python src/main.py --filename "{papername}" --platforms none
+python src/main.py --filename “{papername}” --platforms none
+
+# 控制视频时长（默认300秒=5分钟）
+python src/main.py --filename “{papername}” --target_duration 180 --platforms none
 ```
 
 说明：
 - `--platforms` 支持 `bilibili,xiaohongshu` 的逗号组合，默认值为 `bilibili,xiaohongshu`。
-- 平台上传采用“部分成功”策略：某一个平台失败不会阻塞另一个平台。
+- 平台上传采用”部分成功”策略：某一个平台失败不会阻塞另一个平台。
+- `--target_duration` 控制目标视频时长（秒），默认300秒。多篇论文时自动均分到每篇。系统通过文字预算、图片筛选和TTS后裁剪三层机制控制时长。
 
 ---
 

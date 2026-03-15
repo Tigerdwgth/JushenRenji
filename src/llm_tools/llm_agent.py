@@ -129,12 +129,14 @@ def get_prompt(func_name, text=None):
     return prompt
 
 
-def generate_summary(text):
-    prompt = get_prompt(inspect.currentframe().f_code.co_name, text)
+def generate_summary(text, word_budget: int = 1000):
+    prompt_template = prompts_dict.get(inspect.currentframe().f_code.co_name, "")
+    prompt = prompt_template.format(word_budget=word_budget) + text
     return create_chat_completion(prompt)
 
-def generate_short_summary(text):
-    prompt = get_prompt(inspect.currentframe().f_code.co_name, text)
+def generate_short_summary(text, word_budget: int = 120):
+    prompt_template = prompts_dict.get(inspect.currentframe().f_code.co_name, "")
+    prompt = prompt_template.format(word_budget=word_budget) + text
     return create_chat_completion(prompt)
 
 def generate_video_title(text):
@@ -304,4 +306,50 @@ def add_context_to_image_explanations(image_explanations):
         logging.error(f"解析LLM返回的JSON失败: {e}")
         logging.error(f"LLM返回内容: {response}")
         return image_explanations
+
+
+def rate_image_importance(captions: list) -> list:
+    """对一组图片的题注/描述进行重要性打分。
+
+    Args:
+        captions: 图片描述列表
+
+    Returns:
+        list[int]: 每张图片的重要性分数（1-10）
+    """
+    if not captions:
+        return []
+
+    captions_text = "\n".join(f"{i+1}. {c}" for i, c in enumerate(captions))
+    prompt = get_prompt(inspect.currentframe().f_code.co_name)
+    response = create_chat_completion(prompt, captions_text)
+
+    parsed = _parse_json_response(response)
+    scores = parsed.get("scores", [])
+
+    if len(scores) != len(captions):
+        logging.warning(f"图片打分结果长度不匹配: 期望 {len(captions)}, 实际 {len(scores)}")
+        return [5] * len(captions)
+
+    return [int(s) if isinstance(s, (int, float)) else 5 for s in scores]
+
+
+def select_top_images(items: list, scores: list, top_n: int = 5) -> list:
+    """根据分数选出 top-N 项，保持原始顺序。
+
+    Args:
+        items: 待筛选列表
+        scores: 对应分数列表
+        top_n: 选取数量
+
+    Returns:
+        list: 按原始顺序排列的 top-N 项
+    """
+    if len(items) <= top_n:
+        return items[:]
+
+    indexed = list(enumerate(scores))
+    indexed.sort(key=lambda x: x[1], reverse=True)
+    top_indices = sorted([idx for idx, _ in indexed[:top_n]])
+    return [items[i] for i in top_indices]
 

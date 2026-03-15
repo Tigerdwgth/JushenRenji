@@ -45,6 +45,37 @@ file_handler.setLevel(logging.DEBUG)
 file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
 logging.getLogger().addHandler(file_handler)
 
+# ---- 时长预算常量 ----
+TTS_CHARS_PER_SECOND = 4  # 中文 TTS cosyvoice-v1 约 4 字/秒
+SUMMARY_BUDGET_RATIO = 0.6  # 总结占比
+IMAGE_BUDGET_RATIO = 0.4    # 图片解释占比
+MAX_IMAGES_DEFAULT = 5      # 图片筛选默认上限
+DURATION_OVERFLOW_RATIO = 1.1  # TTS 后兜底的弹性比例
+
+
+def compute_word_budget(target_duration: int = 300, num_images: int = MAX_IMAGES_DEFAULT) -> dict:
+    """根据目标视频时长计算文字预算。
+
+    Args:
+        target_duration: 目标时长（秒）
+        num_images: 图片数量（用于计算每张图的预算）
+
+    Returns:
+        dict: {"total", "summary", "images", "per_image"}
+    """
+    total = target_duration * TTS_CHARS_PER_SECOND
+    if num_images <= 0:
+        return {"total": total, "summary": total, "images": 0, "per_image": 0}
+    summary_budget = int(total * SUMMARY_BUDGET_RATIO)
+    image_budget = total - summary_budget
+    per_image = image_budget // num_images if num_images > 0 else 0
+    return {
+        "total": total,
+        "summary": summary_budget,
+        "images": image_budget,
+        "per_image": per_image,
+    }
+
 
 def extract_abstract_from_text(raw_text: str, limit: int = 1500) -> str:
     """Heuristic extraction of abstract text from full PDF content."""
@@ -117,7 +148,7 @@ def get_videoclips(paper_text: str = "", demo_url: str = "", download_folder: st
 
     return videos
 
-def run_pdf_to_video_pipeline(paper=None,pdf_file_path=None,demowebsite=None,en_title="",prefix=""):
+def run_pdf_to_video_pipeline(paper=None,pdf_file_path=None,demowebsite=None,en_title="",prefix="",target_duration=300):
     logging.info("开始程序")
     # 输入PDF文件路径
     if not pdf_file_path:
@@ -152,7 +183,6 @@ def run_pdf_to_video_pipeline(paper=None,pdf_file_path=None,demowebsite=None,en_
         if extract_captions_from_pdf:
             try:
                 contexts_dict = extract_captions_from_pdf(pdf_file_path)
-                # contexts expects 1-based index -> caption text; try to map fig_1->1 etc.
                 contexts = {}
                 for k, v in contexts_dict.items():
                     m = re.search(r"(\d+)", k)
@@ -162,16 +192,35 @@ def run_pdf_to_video_pipeline(paper=None,pdf_file_path=None,demowebsite=None,en_
             except Exception:
                 contexts = None
 
+        # ---- 图片筛选（基于 LLM 打分） ----
+        if len(images) > MAX_IMAGES_DEFAULT:
+            logging.info(f"图片数量 {len(images)} 超过上限 {MAX_IMAGES_DEFAULT}，进行重要性筛选")
+            try:
+                captions_for_rating = []
+                for img_idx in range(len(images)):
+                    cap = contexts.get(img_idx + 1, f"Figure {img_idx + 1}") if contexts else f"Figure {img_idx + 1}"
+                    captions_for_rating.append(cap)
+                scores = rate_image_importance(captions_for_rating)
+                images = select_top_images(images, scores, top_n=MAX_IMAGES_DEFAULT)
+                logging.info(f"筛选后保留 {len(images)} 张图片")
+            except Exception as e:
+                logging.warning(f"图片筛选失败，使用前 {MAX_IMAGES_DEFAULT} 张: {e}")
+                images = images[:MAX_IMAGES_DEFAULT]
+
+        # 计算文字预算
+        word_budget = compute_word_budget(target_duration, num_images=len(images))
+        logging.info(f"文字预算: 总结{word_budget['summary']}字, 图片{word_budget['images']}字 (每张{word_budget['per_image']}字)")
+
         # 先用LLM总结文章核心内容，然后传递给图像解释
         logging.info("生成文章核心内容总结用于图像解释")
         try:
-            paper_core_summary = generate_summary(text)
+            paper_core_summary = generate_summary(text, word_budget=word_budget['summary'])
             logging.info("文章核心内容总结生成成功")
         except Exception as e:
             logging.warning(f"生成文章核心内容总结失败: {e}")
-            paper_core_summary = text  # 如果失败，使用原始文本
+            paper_core_summary = text
 
-        explanations = image_agent.explain_images(images, contexts=contexts, paper_abstract=paper_abstract, paper_text=paper_core_summary)
+        explanations = image_agent.explain_images(images, contexts=contexts, paper_abstract=paper_abstract, paper_text=paper_core_summary, per_image_budget=word_budget['per_image'])
 
         # 为图像解释添加上下文和过渡语句
         logging.info("为图像解释添加上下文和过渡语句")
@@ -186,31 +235,28 @@ def run_pdf_to_video_pipeline(paper=None,pdf_file_path=None,demowebsite=None,en_
         logging.info("已保存图像解释到 ./cache/image_explanations.json")
     except Exception as e:
         logging.warning("调用 image_agent 解释图片失败: %s", e)
-    
-    logging.info("提取到 %d 张图片", len(images))
-    # 利用正则表达式过滤其中的网址,并访问网址直接下载视频
+        word_budget = compute_word_budget(target_duration, num_images=len(images))
 
-    videos= get_videoclips(text, demowebsite)
-    # 生成摘要
+    logging.info("提取到 %d 张图片", len(images))
+
+    videos = get_videoclips(text, demowebsite)
+    # 生成摘要（注入字数预算）
     logging.info("生成摘要")
-    title, summary = call_llm(text)
-    
+    title, summary = call_llm(text, word_budget=word_budget['summary'])
+
     # 创建视频（将图像解释传入 VideoCreator，使每张图像可被讲解）
     logging.info("开始创建视频")
-    # explanations 之前可能已被定义（尝试在上文调用 image_agent.explain_images）
     image_explanations = None
     try:
-        # 如果缓存文件存在，优先读取；否则如果变量在本作用域被设置则使用
         if os.path.exists('./cache/image_explanations.json'):
             with open('./cache/image_explanations.json', 'r', encoding='utf-8') as f:
                 image_explanations = json.load(f)
         else:
-            # 保持以前的变量名兼容性
             image_explanations = globals().get('explanations', None)
     except Exception:
         image_explanations = globals().get('explanations', None)
 
-    video_creator = VideoCreator(images, summary, videos, image_explanations=image_explanations)
+    video_creator = VideoCreator(images, summary, videos, image_explanations=image_explanations, target_duration=target_duration)
     save_path = f"./output/{title}.mp4"
     video_path = video_creator.create_video(save_path)
     if not video_path or not os.path.exists(video_path):
@@ -223,10 +269,10 @@ def run_pdf_to_video_pipeline(paper=None,pdf_file_path=None,demowebsite=None,en_
     logging.info("程序结束")
     return video_path
 
-def call_llm(text):
+def call_llm(text, word_budget: int = 1000):
     with ThreadPoolExecutor() as executor:
         future_title = executor.submit(generate_video_title, text[:1000])
-        future_summary = executor.submit(generate_summary, text)
+        future_summary = executor.submit(generate_summary, text, word_budget)
         title = future_title.result()
         summary = future_summary.result()
     if summary:
@@ -326,7 +372,7 @@ def download_if_remote(pdf_file_path):
         return -1
     return pdf_file_path
 
-def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().strftime(r"%Y-%m-%d"), max_papers=20, output_filename="./output/daily_summary.mp4",long_or_short="short"):
+def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().strftime(r"%Y-%m-%d"), max_papers=20, output_filename="./output/daily_summary.mp4",long_or_short="short",target_duration=300):
     """
     为每天 arXiv 上的论文生成一个简短的日报性总结视频。
     参数：
@@ -361,6 +407,13 @@ def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().str
     processed_papers = []
     origin_titles = []
 
+    # ---- 时长预算 ----
+    if len(papers) > 1:
+        per_paper_duration = max(30, target_duration // len(papers))
+    else:
+        per_paper_duration = target_duration
+    logging.info(f"目标总时长: {target_duration}秒, 每篇论文目标: {per_paper_duration}秒")
+
     for paper_idx, paper in enumerate(papers):
         logging.info(f"处理第 {paper_idx + 1} 篇论文: {paper.title}")
         # 下载论文 PDF
@@ -378,6 +431,7 @@ def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().str
         text = pdf_processor.extract_text()
         images = process_pdf_images(pdf_processor, cnt=2 if long_or_short == "short" else None)
         paper_abstract = paper.abstract.strip() if getattr(paper, "abstract", None) else extract_abstract_from_text(text)
+
         # 对提取到的图片尝试做图像解释并保存
         try:
             os.makedirs('./cache', exist_ok=True)
@@ -394,16 +448,35 @@ def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().str
                     idx = int(m.group(1))
                     contexts[idx] = v
 
+            # ---- 图片筛选（基于 LLM 打分） ----
+            if len(images) > MAX_IMAGES_DEFAULT:
+                logging.info(f"图片数量 {len(images)} 超过上限 {MAX_IMAGES_DEFAULT}，进行重要性筛选")
+                try:
+                    captions_for_rating = []
+                    for img_idx in range(len(images)):
+                        cap = contexts.get(img_idx + 1, f"Figure {img_idx + 1}") if contexts else f"Figure {img_idx + 1}"
+                        captions_for_rating.append(cap)
+                    scores = rate_image_importance(captions_for_rating)
+                    images = select_top_images(images, scores, top_n=MAX_IMAGES_DEFAULT)
+                    logging.info(f"筛选后保留 {len(images)} 张图片")
+                except Exception as e:
+                    logging.warning(f"图片筛选失败，使用前 {MAX_IMAGES_DEFAULT} 张: {e}")
+                    images = images[:MAX_IMAGES_DEFAULT]
+
+            # 计算文字预算
+            word_budget = compute_word_budget(per_paper_duration, num_images=len(images))
+            logging.info(f"文字预算: 总结{word_budget['summary']}字, 图片{word_budget['images']}字 (每张{word_budget['per_image']}字)")
+
             # 先用LLM总结文章核心内容，然后传递给图像解释
             logging.info("生成文章核心内容总结用于图像解释")
             try:
-                paper_core_summary = generate_summary(text)
+                paper_core_summary = generate_summary(text, word_budget=word_budget['summary'])
                 logging.info("文章核心内容总结生成成功")
             except Exception as e:
                 logging.warning(f"生成文章核心内容总结失败: {e}")
                 paper_core_summary = text  # 如果失败，使用原始文本
 
-            explanations = image_agent.explain_images(images, contexts=contexts, paper_abstract=paper_abstract, paper_text=paper_core_summary)
+            explanations = image_agent.explain_images(images, contexts=contexts, paper_abstract=paper_abstract, paper_text=paper_core_summary, per_image_budget=word_budget['per_image'])
 
             # 为图像解释添加上下文和过渡语句
             logging.info("为图像解释添加上下文和过渡语句")
@@ -421,15 +494,19 @@ def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().str
             logging.warning(f"未提取到图片，跳过论文: {paper.title}")
             continue
         
-        # 生成简短摘要
+        # 生成简短摘要（注入字数预算）
         logging.info("生成摘要")
-        deom_website, origin_title, short_summary,cn_title = call_llm_multithread(
+        # word_budget 可能在 try 块外未定义（图像解释失败时），兜底计算
+        if 'word_budget' not in dir():
+            word_budget = compute_word_budget(per_paper_duration, num_images=len(images))
+        deom_website, origin_title, short_summary, cn_title = call_llm_multithread(
             [
                 (get_paper_demo_website, text[:1000]),
                 (generate_origin_title, text[:200]),
-                (generate_short_summary, f"{text[:5000]} {paper.comments}") if long_or_short == "short" else (generate_summary, paper.comments+text),
+                (lambda t: generate_short_summary(t, word_budget=word_budget['summary']), f"{text[:5000]} {paper.comments}")
+                    if long_or_short == "short"
+                    else (lambda t: generate_summary(t, word_budget=word_budget['summary']), paper.comments + text),
                 (generate_video_title, text[:200]),
-                
             ]
         )
         
@@ -457,7 +534,7 @@ def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().str
                     image_explanations_part = json.load(f)
         except Exception:
             image_explanations_part = None
-        video_creator = VideoCreator(images, short_summary, video_clips=get_videoclips(text, deom_website), image_explanations=image_explanations_part)
+        video_creator = VideoCreator(images, short_summary, video_clips=get_videoclips(text, deom_website), image_explanations=image_explanations_part, target_duration=per_paper_duration)
         part_save_path = f"./output/part_{paper_idx + 1}.mp4"
         part_video_path = video_creator.create_video(part_save_path)
         if not part_video_path or not os.path.exists(part_video_path):

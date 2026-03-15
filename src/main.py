@@ -45,6 +45,12 @@ def parse_args():
         default="bilibili,xiaohongshu",
         help="Upload platforms, comma-separated: bilibili,xiaohongshu or none"
     )
+    parser.add_argument(
+        "--target_duration",
+        type=int,
+        default=300,
+        help="Target video duration in seconds (default: 300 = 5min)"
+    )
 
     return parser.parse_args()
 
@@ -56,6 +62,7 @@ if __name__ == "__main__":
     language = args.output_language
     video_length = args.video_length
     platforms = parse_platforms(args.platforms)
+    target_duration = args.target_duration
 
     try:
         if not filename:
@@ -65,7 +72,7 @@ if __name__ == "__main__":
         yesterday=yesterday.strftime(r"%Y-%m-%d")
         today=today.strftime(r"%Y-%m-%d")
         logging.info("今天是%s,昨天是%s", today, yesterday)
-        path,titles,cn_titles=generate_daily_arxiv_summary(query=filename,max_papers=1,date=str(yesterday),long_or_short=video_length)
+        path,titles,cn_titles=generate_daily_arxiv_summary(query=filename,max_papers=1,date=str(yesterday),long_or_short=video_length,target_duration=target_duration)
         if not path or not os.path.exists(path):
             raise RuntimeError(f"视频生成失败，输出文件不存在: {path}")
         logging.info("本地视频生成完成: %s", path)

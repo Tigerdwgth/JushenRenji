@@ -12,7 +12,7 @@ LANGUAGE_SUFFIX = {
 prompts_dict = {
     #key 必须是和函数名相同
     "generate_summary": (
-        "请总结以下论文的核心内容,重点讲解方法，参考摘要，请使用简洁的表达，生成约1000字的总结。"
+        "请总结以下论文的核心内容,重点讲解方法，参考摘要，请使用简洁的表达，生成约{word_budget}字的总结。"
         "禁止输出markdown形式的文本，不要一条一条的列出，而是以长文的形式。"
         "你的目标是帮助用户快速理解论文核心内容，语言通俗易懂，适合制作论文讲解视频的文案。"
         "请以 “这篇文章...”作为开始，不要重复文章标题\n"
@@ -24,6 +24,7 @@ prompts_dict = {
         "3. 用两句话简短介绍一下这篇文章的核心方法、模型结构和贡献，言简意赅。"
         "4. 禁止复读论文标题"
         "5. 禁止使用markdown形式的输出，请用完整的句子，而非列举点,使用中文"
+        "6. 严格控制总字数在{word_budget}字以内"
     ),
     "generate_video_title": (
         "为讲解视频生成一个简介易懂明了吸引人的中文标题，仅输出标题不输出其他内容，"
@@ -85,7 +86,7 @@ prompts_dict = {
         "始终返回严格可解析的JSON，字段包括：caption、detailed_explanation、key_points、qa、figure_role、recommended_section、main_figure_score。"
         "教学要求：1)语气生动活泼，像老师授课一样有感染力；2)前后内容有承接，过渡自然；3)逻辑清晰简洁，每句话只讲一个核心点；4)每张图片的讲解要分段进行，避免文字堆叠。"
         "caption 需为简洁描述；detailed_explanation 是分段式讲解内容，每段1-2句话，语气像老师在课堂上引导学生，句子短、适合朗读，不使用 Markdown、列表或公式；"
-        "注意：每句话必须控制在30字以内！每张图片的详细讲解总长度不超过150字！"
+        "注意：每句话必须控制在30字以内！每张图片的详细讲解总长度不超过{per_image_budget}字！"
         "key_points 为3到5条自然语言短句组成的列表，不加序号或符号；qa 为3个对象，每个对象含 question 和 answer，聚焦图像内容与全文关联，不猜测会议或投稿信息；"
         "figure_role 用一句话说明该图更像总览、方法流程、实验对比或其他；recommended_section 需在 opening/intro、method、results、other 中选择最合适的章节；"
         "main_figure_score 为0到1之间的小数，表示该图是否可能是论文主图/总览图，提供保守估计。"
@@ -95,7 +96,7 @@ prompts_dict = {
         "请结合图像内容生成教学式讲解，语言生动有趣，像老师在课堂上引导学生思考。"
         "讲解要基于文章全部内容，理解图像在论文中的作用和位置，前后内容要有逻辑承接。"
         "每张图片的详细讲解要分段输出，每段1-2句话，每句话必须在30字以内！"
-        "严格控制总长度：每张图片的详细讲解（detailed_explanation）总字数不超过150字！"
+        "严格控制总长度：每张图片的详细讲解（detailed_explanation）总字数不超过{per_image_budget}字！"
         "如果提供图像题注，请结合题注内容进行讲解。"
         "返回的JSON键为 caption、detailed_explanation、key_points、qa、figure_role、recommended_section、main_figure_score。"
         "recommended_section 只允许 opening/intro、method、results、other 四种取值；"
@@ -105,7 +106,13 @@ prompts_dict = {
     "explain_image_ocr_fallback": (
         "你是学术论文图像解读专家。请基于题注、论文摘要、全文内容和OCR文本，生成教学式讲解内容，返回JSON，字段：caption, detailed_explanation, key_points, qa。"
         "讲解语气要生动有趣，像老师在课堂上引导学生思考，前后内容要有逻辑承接，每段文字要简洁明了。"
-    )
+    ),
+    "rate_image_importance": (
+        "你是学术论文分析专家。给定一组图片的题注/描述，请对每张图片的重要性打分（1-10分）。"
+        "重要性标准：总览图/方法架构图 > 核心实验结果图 > 消融实验图 > 其他辅助图。"
+        "请严格返回JSON格式：{\"scores\": [分数1, 分数2, ...]}，分数列表长度必须与输入数量一致。"
+        "禁止输出其他内容。"
+    ),
 }
 def get_language_suffix():
     """获取当前语言的后缀"""

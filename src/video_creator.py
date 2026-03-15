@@ -139,17 +139,70 @@ def _wrap_text(text, max_chars=20):
     return '\n'.join(result)
 
 
+def trim_segments_to_duration(segments: list, target_duration: float,
+                               overflow_ratio: float = 1.1) -> list:
+    """TTS 后兜底裁剪：从尾部移除整段直到总时长在弹性范围内。
+
+    Args:
+        segments: [{"type": "expl"|"summary", "duration": float, "image_idx": int}, ...]
+        target_duration: 目标时长（秒）
+        overflow_ratio: 允许的弹性比例
+
+    Returns:
+        裁剪后的 segments 列表
+    """
+    max_duration = target_duration * overflow_ratio
+    total = sum(s["duration"] for s in segments)
+
+    if total <= max_duration:
+        return segments[:]
+
+    logging.info(f"TTS 总时长 {total:.1f}s 超过目标 {max_duration:.1f}s，开始裁剪")
+
+    result = segments[:]
+
+    # 第一轮：从尾部移除 expl 类型
+    while sum(s["duration"] for s in result) > max_duration:
+        removed = False
+        for i in range(len(result) - 1, -1, -1):
+            if result[i]["type"] == "expl":
+                removed_seg = result.pop(i)
+                logging.info(f"移除图片解释段 image_idx={removed_seg['image_idx']}, duration={removed_seg['duration']:.1f}s")
+                removed = True
+                break
+        if not removed:
+            break
+
+    # 第二轮：如果仍超标，从尾部移除 summary 类型
+    while sum(s["duration"] for s in result) > max_duration:
+        removed = False
+        for i in range(len(result) - 1, -1, -1):
+            if result[i]["type"] == "summary":
+                removed_seg = result.pop(i)
+                logging.info(f"移除摘要段 image_idx={removed_seg['image_idx']}, duration={removed_seg['duration']:.1f}s")
+                removed = True
+                break
+        if not removed:
+            break
+
+    final_total = sum(s["duration"] for s in result)
+    logging.info(f"裁剪后总时长: {final_total:.1f}s")
+    return result
+
+
 class VideoCreator:
-    def __init__(self, images, text, video_clips=None, image_explanations=None):
+    def __init__(self, images, text, video_clips=None, image_explanations=None, target_duration=0):
         """images: list of PIL.Image
         text: full summary text
         video_clips: optional list of VideoFileClip (external video materials)
         image_explanations: optional list of dicts (from ImageAgent.explain_images)
+        target_duration: 目标视频时长（秒），0 表示不限制
         """
         self.images = images
         self.text = text
         self.video_clips = video_clips or []
         self.image_explanations = image_explanations or []
+        self.target_duration = target_duration
         self.texts = []
         self.time = []
         self.texts_starts = []
@@ -403,6 +456,38 @@ class VideoCreator:
                 start = i * per
                 end = min(start + per, total_sent)
                 groups[i] = summary_sentence_files[start:end]
+
+        # 5.5) TTS 后兜底裁剪
+        if self.target_duration > 0:
+            segments = []
+            for i in range(n_images):
+                expl_sents = expl_sentence_files[i] if i < len(expl_sentence_files) else []
+                expl_dur = sum(f[2] for f in expl_sents)
+                if expl_dur > 0:
+                    segments.append({"type": "expl", "duration": expl_dur, "image_idx": i})
+                for (path, txt) in groups[i]:
+                    clip = safe_audio_clip_loader(path)
+                    dur = clip.duration if clip else 2.0
+                    if clip:
+                        clip.close()
+                    segments.append({"type": "summary", "duration": dur, "image_idx": i})
+
+            trimmed = trim_segments_to_duration(segments, self.target_duration)
+            # 根据裁剪结果过滤 expl 和 summary
+            trimmed_expl_indices = set()
+            trimmed_summary_indices = set()
+            for seg in trimmed:
+                if seg["type"] == "expl":
+                    trimmed_expl_indices.add(seg["image_idx"])
+                elif seg["type"] == "summary":
+                    trimmed_summary_indices.add(seg["image_idx"])
+
+            for i in range(len(expl_sentence_files)):
+                if i not in trimmed_expl_indices:
+                    expl_sentence_files[i] = []
+            for i in range(len(groups)):
+                if i not in trimmed_summary_indices:
+                    groups[i] = []
 
         # 6) build per-image clips and subtitle entries (音频在步骤7统一加载)
         clips = []
