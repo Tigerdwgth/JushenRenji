@@ -12,10 +12,15 @@ LANGUAGE_SUFFIX = {
 prompts_dict = {
     #key 必须是和函数名相同
     "generate_summary": (
-        "请总结以下论文的核心内容,重点讲解方法，参考摘要，请使用简洁的表达，生成约{word_budget}字的总结。"
-        "禁止输出markdown形式的文本，不要一条一条的列出，而是以长文的形式。"
-        "你的目标是帮助用户快速理解论文核心内容，语言通俗易懂，适合制作论文讲解视频的文案。"
-        "请以 “这篇文章...”作为开始，不要重复文章标题\n"
+        "你是一名科技视频讲师，请将论文转化为一段引人入胜的视频讲稿，约{word_budget}字。"
+        "请按以下叙事结构组织：\n"
+        "1. 开场Hook（约5%）：用一句话点出这篇论文解决的'痛点'或令人惊叹的成果，激发好奇心。\n"
+        "2. 背景铺垫（约15%）：为什么这个问题重要？前人做到了什么程度？\n"
+        "3. 核心方法（约50%）：这篇论文的创新在哪里？请用类比或通俗比喻帮助理解，逐步拆解。\n"
+        "4. 实验亮点（约20%）：关键实验结果是什么？比之前好了多少？\n"
+        "5. 总结展望（约10%）：这项工作的意义是什么？未来还能怎么做？\n"
+        "写作要求：语气自然口语化，像老师给学生讲课；用'首先'、'接下来'、'最后'等连接词过渡；"
+        "禁止markdown/列表/公式符号；禁止复读论文标题；以'大家好'或'今天'开场。\n"
     ),
     "generate_short_summary": (
         "你现在是组会分享论文的研究生，请分享下面的文章，严格遵循以下要求。"
@@ -27,8 +32,9 @@ prompts_dict = {
         "6. 严格控制总字数在{word_budget}字以内"
     ),
     "generate_video_title": (
-        "为讲解视频生成一个简介易懂明了吸引人的中文标题，仅输出标题不输出其他内容，"
-        "禁止输出多余内容，与标点符号，不要标题加引号。"
+        "为论文讲解视频生成一个吸引人的中文标题。"
+        "要求：简洁有力（15字以内）；突出核心亮点或创新；可包含'首次'、'突破'、'新方法'等关键词；"
+        "仅输出标题，不加引号、标点或其他内容。"
     ),
     "generate_origin_title": "论文的标题是什么？仅输出论文英文标题,不输出任何其他的文字",
     "generate_video_proceedings": (
@@ -36,15 +42,19 @@ prompts_dict = {
         "如果文字中没有提到请输出Arxiv2025"
     ),
     "generate_structured_video_plan": (
-        "你是一名严谨的学术视频脚本策划，请根据提供的论文正文（可能包含摘要、正文、实验）生成 JSON 结构化脚本。"
-        "整体篇章需覆盖 4 个部分：0) opening，1) intro 背景与挑战，2) method 分模块讲解主图，3) results/impact。"
-        "请严格输出 JSON，键包括："
-        "opening: {\"script\": 用一段吸引人的开场白串联论文标题与亮点, \"visual_prompt\": 用于AI绘图的中文/英文提示词}；"
-        "intro: {\"script\": 介绍研究背景与挑战，语气口语化, \"visual_prompt\": 用1-2句描述希望生成的概念性插画；}\n"
-        "method: {\"overview\": 总体思路概述, \"modules\":[{\"name\": 模块名, \"description\": 20~40字说明}...], \"script\": 将overview与modules串成完整口播};"
-        "results: {\"script\": 说明问题解决效果、实验结果与意义, \"evidence_points\": 列出2~3条关键指标或现象，用短句}."
-        "语言要求：纯中文，禁止markdown/列表符号；JSON 中的字符串不要包含换行符或引号冲突；"
-        "若缺少信息请基于已有文本保守推断，绝不虚构会议/数据。"
+        "你是一名顶级科技视频脚本策划。请根据论文内容生成严格的 JSON 结构化脚本。"
+        "覆盖 4 个部分：opening、intro、method、results。\n"
+        "输出格式示例：\n"
+        "{\"opening\": {\"script\": \"大家好！今天要讲的这篇论文非常有意思...\"},"
+        " \"intro\": {\"script\": \"要理解这项工作，我们首先要知道...\"},"
+        " \"method\": {\"script\": \"这篇论文提出的核心方法是...\"},"
+        " \"results\": {\"script\": \"实验结果表明...\"}}\n"
+        "写作要求：\n"
+        "1. opening（约5%）：用一句令人好奇的问题或惊人数据开场，然后引出论文主题。\n"
+        "2. intro（约15%）：讲清楚问题背景，为什么难，前人怎么做的。\n"
+        "3. method（约50%）：拆解核心方法，用类比和通俗语言，像老师教学生。\n"
+        "4. results（约30%）：关键实验结果 + 这项工作的意义和启发。\n"
+        "全部使用中文口语，禁止markdown/列表/公式，禁止虚构数据。仅输出JSON。"
     ),
     "get_paper_demo_website": (
         "请问这篇论文的视频网址是什么？,请以json格式输出,需要可以被python解析,禁止输出其他多余文字，禁止输出markdown，"
@@ -82,26 +92,25 @@ prompts_dict = {
     ),
     # Image Agent Prompts
     "explain_image_system": (
-        "你是一名生动的学术讲师，负责为视频配音生成教学式图像讲解内容。"
-        "始终返回严格可解析的JSON，字段包括：caption、detailed_explanation、key_points、qa、figure_role、recommended_section、main_figure_score。"
-        "教学要求：1)语气生动活泼，像老师授课一样有感染力；2)前后内容有承接，过渡自然；3)逻辑清晰简洁，每句话只讲一个核心点；4)每张图片的讲解要分段进行，避免文字堆叠。"
-        "caption 需为简洁描述；detailed_explanation 是分段式讲解内容，每段1-2句话，语气像老师在课堂上引导学生，句子短、适合朗读，不使用 Markdown、列表或公式；"
-        "注意：每句话必须控制在30字以内！每张图片的详细讲解总长度不超过{per_image_budget}字！"
-        "key_points 为3到5条自然语言短句组成的列表，不加序号或符号；qa 为3个对象，每个对象含 question 和 answer，聚焦图像内容与全文关联，不猜测会议或投稿信息；"
-        "figure_role 用一句话说明该图更像总览、方法流程、实验对比或其他；recommended_section 需在 opening/intro、method、results、other 中选择最合适的章节；"
-        "main_figure_score 为0到1之间的小数，表示该图是否可能是论文主图/总览图，提供保守估计。"
-        "除非缺少信息，不要输出 '未知'，若信息不足请明确说明。"
+        "你是一名优秀的学术讲师，像在课堂上指着图表给学生讲解。"
+        "始终返回严格可解析的JSON，字段：caption、detailed_explanation、key_points、qa、figure_role、recommended_section、main_figure_score。"
+        "讲解风格：1)语气生动有感染力，像老师对学生说话；2)先说'我们来看这张图'引入；"
+        "3)解释图中X轴Y轴代表什么、关键曲线/模块是什么；4)总结这张图说明了什么。"
+        "caption 为一句话描述；detailed_explanation 是连贯的讲解段落，适合朗读，不使用Markdown/列表/公式；"
+        "总长度不超过{per_image_budget}字。"
+        "key_points 为3-5条自然语言短句；qa 为3组问答；"
+        "figure_role 说明该图是总览/方法/实验/对比中的哪种；"
+        "recommended_section 在 opening/intro、method、results、other 中选一；"
+        "main_figure_score 为0~1的小数。不要输出'未知'。"
     ),
     "explain_image_user": (
-        "请结合图像内容生成教学式讲解，语言生动有趣，像老师在课堂上引导学生思考。"
-        "讲解要基于文章全部内容，理解图像在论文中的作用和位置，前后内容要有逻辑承接。"
-        "每张图片的详细讲解要分段输出，每段1-2句话，每句话必须在30字以内！"
-        "严格控制总长度：每张图片的详细讲解（detailed_explanation）总字数不超过{per_image_budget}字！"
-        "如果提供图像题注，请结合题注内容进行讲解。"
-        "返回的JSON键为 caption、detailed_explanation、key_points、qa、figure_role、recommended_section、main_figure_score。"
-        "recommended_section 只允许 opening/intro、method、results、other 四种取值；"
-        "main_figure_score 必须为0~1的小数。"
-        "key_points 需给出3到5条短句，qa 给出3组问答，均使用自然教学口语，避免列表符号。"
+        "请结合图像和论文全文内容生成讲解，像老师在黑板前指着图表讲课。"
+        "结构：1)引入这张图——它在论文哪个部分、承接什么内容；"
+        "2)快速解读——图中关键元素代表什么；"
+        "3)核心洞察——这个结果/结构说明了什么，为什么重要。"
+        "总字数不超过{per_image_budget}字。如果有图像题注请结合使用。"
+        "返回JSON，键：caption、detailed_explanation、key_points、qa、figure_role、recommended_section、main_figure_score。"
+        "recommended_section 仅允许 opening/intro、method、results、other；main_figure_score 为0~1小数。"
     ),
     "explain_image_ocr_fallback": (
         "你是学术论文图像解读专家。请基于题注、论文摘要、全文内容和OCR文本，生成教学式讲解内容，返回JSON，字段：caption, detailed_explanation, key_points, qa。"

@@ -11,12 +11,20 @@
 ├── src
 │   ├── distribution          # 多平台上传模块
 │   │   ├── __init__.py
-│   │   ├── bilibili.py       # B站上传
-│   │   └── xiaohongshu.py    # 小红书上传
+│   │   ├── orchestrator.py   # 上传编排（视频优先，图文降级）
+│   │   ├── bilibili.py       # B站上传（biliup Cookie）
+│   │   └── xiaohongshu.py    # 小红书上传（MCP 视频+图文）
 │   ├── llm_tools
+│   │   ├── llm_agent.py      # LLM 客户端（延迟初始化）
+│   │   ├── prompts.py        # 所有 prompt 统一管理
+│   │   └── image_agent.py    # Qwen-VL 图片解释
 │   ├── utils
+│   │   └── audio_helpers.py  # TTS/音频安全处理
 │   ├── main.py
-│   └── video_creator.py
+│   └── video_creator.py      # 视频合成（Ken Burns + 转场 + 字幕）
+├── tests                     # pytest 单元测试
+│   ├── distribution/
+│   └── ...
 ├── requirements.txt
 ├── README.md
 └── README_EN.md
@@ -25,9 +33,13 @@
 ## 功能
 
 1. **PDF处理**：从PDF文件中提取文本和图片。
-2. **视频创建**：将提取的内容合成视频。
-3. **摘要和标题生成**：生成引人注目的摘要和标题，以吸引观众。
-4. **多平台上传**：支持B站、小红书等平台自动上传。
+2. **视频创建**：Ken Burns 动画 + 淡入淡出转场 + 半透明字幕，支持目标时长控制。
+3. **图文语义匹配**：基于 structured_plan 和 image_explanations 中的 recommended_section 字段，将摘要句子按语义匹配到对应图片，章节标题使用真实的 figure_role。
+4. **LLM脚本生成**：5段式结构化视频脚本（opening→intro→method→results），课堂讲解风格。
+5. **多平台上传**：B站视频上传 + 小红书视频/图文自动上传（视频优先，降级图文）。
+6. **TTS并发合成**：DashScope cosyvoice-v1，6线程并发加速。
+7. **图片智能筛选**：LLM 打分选取最重要的图片，Qwen-VL 生成图片讲解。
+8. **Demo 视频下载**：自动从论文项目主页提取并下载演示视频，嵌入最终视频开头。
 
 ## 使用说明
 
@@ -184,6 +196,15 @@ python src/main.py --filename “{papername}” --target_duration 180 --platform
 - `--platforms` 支持 `bilibili,xiaohongshu` 的逗号组合，默认值为 `bilibili,xiaohongshu`。
 - 平台上传采用”部分成功”策略：某一个平台失败不会阻塞另一个平台。
 - `--target_duration` 控制目标视频时长（秒），默认300秒。多篇论文时自动均分到每篇。系统通过文字预算、图片筛选和TTS后裁剪三层机制控制时长。
+
+---
+
+## 运行测试
+
+```bash
+conda activate paperagent
+python -m pytest tests/ -v
+```
 
 ---
 

@@ -1,0 +1,23 @@
+# 配置示例 - 复制为 config.yaml 并填入你的密钥
+# 敏感信息建议使用环境变量: LLM_API_KEY, DASHSCOPE_API_KEY
+
+bilibili_cookies_file: bilibili_cookies.pkl
+
+bilibili_cookies:
+  sessdata: "your_sessdata_here"
+  bili_jct: "your_bili_jct_here"
+  dedeuserid: "your_dedeuserid_here"
+  dedeuserid_ckmd5: "your_ckmd5_here"
+
+cache_dir: ./cache
+dashscope_api_key: your_dashscope_api_key_here
+font_path: ./font/SIMHEI.TTF
+llm_api_key: your_llm_api_key_here
+output_dir: ./output
+output_language: zh
+pic_dir: ./pic
+tessdata_prefix: ./font
+
+# 背景音乐配置（可选）
+bgm_path: ""
+bgm_volume: 0.08

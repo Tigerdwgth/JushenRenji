@@ -5,7 +5,7 @@ from openai import OpenAI
 from pdf_processor import PDFProcessor
 from video_creator import VideoCreator
 from get_website_data import download_videos_files
-from config import *
+from config import FONT_PATH
 from get_arxiv_latest import get_paper_from_arxiv,filter_papers_by_date,Paper
 from generate_cover import generate_cover
 # from auto_upload_bilibili import upload_video_to_bilibili
@@ -19,7 +19,19 @@ import re
 import datetime
 import logging
 
-from src.llm_tools.llm_agent import *
+from src.llm_tools.llm_agent import (
+    MANUALLY_EXTRACT_IMAGES,
+    generate_summary,
+    generate_short_summary,
+    generate_video_title,
+    generate_origin_title,
+    generate_structured_video_plan,
+    structured_plan_to_text,
+    get_paper_demo_website,
+    rate_image_importance,
+    select_top_images,
+    add_context_to_image_explanations,
+)
 # image agent for qwen-vl
 try:
     from src.llm_tools.image_agent import ImageAgent
@@ -240,9 +252,26 @@ def run_pdf_to_video_pipeline(paper=None,pdf_file_path=None,demowebsite=None,en_
     logging.info("提取到 %d 张图片", len(images))
 
     videos = get_videoclips(text, demowebsite)
-    # 生成摘要（注入字数预算）
-    logging.info("生成摘要")
-    title, summary = call_llm(text, word_budget=word_budget['summary'])
+    # 生成摘要（优先使用结构化脚本，回退为普通摘要）
+    logging.info("生成结构化视频脚本")
+    structured_plan = {}
+    try:
+        structured_plan = generate_structured_video_plan(text, word_budget=word_budget['summary'])
+        if structured_plan:
+            summary = structured_plan_to_text(structured_plan)
+            title = generate_video_title(text[:1000])
+            logging.info("结构化脚本生成成功，使用5段式叙事")
+        else:
+            raise ValueError("结构化脚本为空")
+    except Exception as e:
+        logging.warning(f"结构化脚本生成失败，回退为普通摘要: {e}")
+        # 复用已生成的 paper_core_summary，避免重复 LLM 调用
+        if paper_core_summary and paper_core_summary != text:
+            summary = paper_core_summary
+            title = generate_video_title(text[:1000])
+            logging.info("复用 paper_core_summary 作为摘要，节省 LLM 调用")
+        else:
+            title, summary = call_llm(text, word_budget=word_budget['summary'])
 
     # 创建视频（将图像解释传入 VideoCreator，使每张图像可被讲解）
     logging.info("开始创建视频")
@@ -256,12 +285,16 @@ def run_pdf_to_video_pipeline(paper=None,pdf_file_path=None,demowebsite=None,en_
     except Exception:
         image_explanations = globals().get('explanations', None)
 
-    video_creator = VideoCreator(images, summary, videos, image_explanations=image_explanations, target_duration=target_duration)
+    # 将结构化脚本传入 VideoCreator，用于语义匹配图文对应
+    video_creator = VideoCreator(images, summary, videos, image_explanations=image_explanations, target_duration=target_duration, structured_plan=structured_plan)
     save_path = f"./output/{title}.mp4"
     video_path = video_creator.create_video(save_path)
     if not video_path or not os.path.exists(video_path):
         raise RuntimeError(f"视频创建失败，输出文件不存在: {save_path}")
-    generate_cover('./pic/1.png', title, video_path.replace(".mp4",".png"))
+    try:
+        generate_cover('./pic/1.png', title, video_path.replace(".mp4", ".png"))
+    except Exception as e:
+        logging.warning("封面生成失败，跳过封面: %s", e)
     logging.info("视频已成功创建，路径为: %s", video_path)
     #convert to absolute path
     video_path = os.path.abspath(video_path)
@@ -346,24 +379,26 @@ def download_if_remote(pdf_file_path):
     """
     if pdf_file_path.startswith("http"):
         logging.info("下载PDF文件")
-        def download_file(url):
-            """
-            下载远程文件并保存到本地。
-
-            参数：
-            - url (str): 远程文件的 URL。
-
-            返回值：
-            - file_name (str): 下载后的本地文件路径。
-            """
+        def download_file(url, max_retries=3):
+            """下载远程文件并保存到本地，带指数退避重试。"""
             import requests
-            import os
-            file_name = "cached_pdf.pdf"
-            file_name = os.path.join("./cache", file_name)
-            with open(file_name, "wb") as f:
-                response = requests.get(url)
-                f.write(response.content)
-            return file_name
+            import time as _time
+            file_name = os.path.join("./cache", "cached_pdf.pdf")
+            for attempt in range(max_retries):
+                try:
+                    response = requests.get(url, timeout=60)
+                    response.raise_for_status()
+                    with open(file_name, "wb") as f:
+                        f.write(response.content)
+                    return file_name
+                except Exception as e:
+                    wait = 2 ** attempt
+                    logging.warning(f"PDF 下载失败 (第{attempt+1}次), {wait}s 后重试: {e}")
+                    if attempt < max_retries - 1:
+                        _time.sleep(wait)
+                    else:
+                        logging.error(f"PDF 下载最终失败: {e}")
+                        raise
         pdf_file_path = download_file(pdf_file_path)
         logging.info(f"下载完成，保存路径: {pdf_file_path}")
     # 检查文件是否存在
@@ -406,6 +441,7 @@ def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().str
     generated_part_paths = []
     processed_papers = []
     origin_titles = []
+    summaries = []  # 每篇论文的中文摘要，用于上传平台文案
 
     # ---- 时长预算 ----
     if len(papers) > 1:
@@ -499,7 +535,7 @@ def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().str
         # word_budget 可能在 try 块外未定义（图像解释失败时），兜底计算
         if 'word_budget' not in dir():
             word_budget = compute_word_budget(per_paper_duration, num_images=len(images))
-        deom_website, origin_title, short_summary, cn_title = call_llm_multithread(
+        demo_website, origin_title, short_summary, cn_title = call_llm_multithread(
             [
                 (get_paper_demo_website, text[:1000]),
                 (generate_origin_title, text[:200]),
@@ -511,14 +547,18 @@ def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().str
         )
         
         cn_titles.append(cn_title)
+        summaries.append(short_summary or "")
         if not short_summary:
             logging.warning(f"摘要生成失败，跳过论文: {paper.title}")
             continue
         
-        if len(papers) > 1:
-            generate_cover('./pic/1.png', "Arxiv具身日报" + str(date), output_filename.replace(".mp4", ".png"))
-        else:
-            generate_cover('./pic/1.png', cn_title, output_filename.replace(".mp4", ".png"))
+        # 单篇论文时在循环内生成封面（循环只执行一次）
+        # 多篇论文时封面在循环外、合并视频后统一生成，避免每次迭代覆盖同一文件
+        if len(papers) == 1:
+            try:
+                generate_cover('./pic/1.png', cn_title, output_filename.replace(".mp4", ".png"))
+            except Exception as e:
+                logging.warning("单篇论文封面生成失败，跳过封面: %s", e)
         # 限制图片数量为前两张
         if long_or_short == "short":
             images = images[:3]
@@ -534,7 +574,7 @@ def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().str
                     image_explanations_part = json.load(f)
         except Exception:
             image_explanations_part = None
-        video_creator = VideoCreator(images, short_summary, video_clips=get_videoclips(text, deom_website), image_explanations=image_explanations_part, target_duration=per_paper_duration)
+        video_creator = VideoCreator(images, short_summary, video_clips=get_videoclips(text, demo_website), image_explanations=image_explanations_part, target_duration=per_paper_duration)
         part_save_path = f"./output/part_{paper_idx + 1}.mp4"
         part_video_path = video_creator.create_video(part_save_path)
         if not part_video_path or not os.path.exists(part_video_path):
@@ -556,10 +596,16 @@ def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().str
         new_part_video_path = os.path.abspath(f"./output/{date_str}_{title_for_filename}.mp4")
         if os.path.abspath(part_video_path) != new_part_video_path:
             os.replace(part_video_path, new_part_video_path)
+        # 同步重命名封面文件，确保 cover_path = video_path.replace(".mp4", ".png") 能找到
+        old_cover = os.path.abspath(output_filename.replace(".mp4", ".png"))
+        new_cover = new_part_video_path.replace(".mp4", ".png")
+        if os.path.exists(old_cover) and os.path.abspath(old_cover) != os.path.abspath(new_cover):
+            os.replace(old_cover, new_cover)
+            logging.info(f"封面已重命名: {old_cover} -> {new_cover}")
         if not os.path.exists(new_part_video_path):
             raise RuntimeError(f"单篇视频输出失败: {new_part_video_path}")
         logging.info(f"单篇视频已成功生成，路径为: {new_part_video_path}")
-        return new_part_video_path, origin_titles, cn_titles
+        return new_part_video_path, origin_titles, cn_titles, summaries
 
     # 合并所有论文的视频片段（至少一段）
     video_clips = [VideoFileClip(path) for path in generated_part_paths]
@@ -580,10 +626,16 @@ def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().str
     final_video = concatenate_videoclips(video_clips, method="compose")
     final_video = CompositeVideoClip([final_video, final_tiles])
     final_video.write_videofile(output_filename, fps=24, codec='libx264', preset='medium')
-    
+
+    # 多篇论文合并完成后，统一生成日报封面（避免循环内反复覆盖）
+    try:
+        generate_cover('./pic/1.png', "Arxiv具身日报" + str(date), output_filename.replace(".mp4", ".png"))
+    except Exception as e:
+        logging.warning("日报封面生成失败，跳过封面: %s", e)
+
     # 转换为绝对路径
     final_video_path = os.path.abspath(output_filename)
     if not os.path.exists(final_video_path):
         raise RuntimeError(f"日报视频输出失败: {final_video_path}")
     logging.info(f"日报视频已成功生成，路径为: {final_video_path}")
-    return final_video_path, origin_titles,cn_titles
+    return final_video_path, origin_titles, cn_titles, summaries

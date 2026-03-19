@@ -17,15 +17,16 @@ def load_config():
 # 加载配置
 _config = load_config()
 
-# API Keys - 全大写全局变量
-LLM_API_KEY = _config.get("llm_api_key") or os.getenv("LLM_API_KEY")
-DASHSCOPE_API_KEY = _config.get("dashscope_api_key") or os.getenv("DASHSCOPE_API_KEY")
+# API Keys - 环境变量优先，YAML 兜底
+LLM_API_KEY = os.getenv("LLM_API_KEY") or _config.get("llm_api_key")
+DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY") or _config.get("dashscope_api_key")
 
 # Directory and File Paths - 全大写全局变量
 CACHE_DIR = _config.get("cache_dir", "./cache")
 PIC_DIR = _config.get("pic_dir", "./pic")
 OUTPUT_DIR = _config.get("output_dir", "./output")
-FONT_PATH = _config.get("font_path", "./font/SIMHEI.TTF")
+_raw_font_path = _config.get("font_path", "./font/SIMHEI.TTF")
+FONT_PATH = str(PROJECT_ROOT / _raw_font_path) if not os.path.isabs(_raw_font_path) else _raw_font_path
 BILIBILI_COOKIES_FILE = _config.get("bilibili_cookies_file", "bilibili_cookies.pkl")
 
 # Environment Variables

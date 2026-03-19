@@ -8,96 +8,67 @@ from openai import OpenAI
 import logging
 import yaml
 import inspect
-from src.config import *
+from src.config import (
+    LLM_API_KEY, DASHSCOPE_API_KEY, API_KEYS,
+    CACHE_DIR, PIC_DIR, OUTPUT_DIR, FONT_PATH,
+)
 from src.llm_tools.prompts import prompts_dict
+
 # 配置日志记录
 logging.basicConfig(
     filename='app.log',
-    level=logging.DEBUG,  # 修改为 DEBUG 级别
+    level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 
+# ---------------------------------------------------------------------------
+# 延迟初始化：避免模块导入时触发 API 连接等副作用
+# ---------------------------------------------------------------------------
 
-def load_config():
-    """
-    从 config.yaml 文件中加载配置。
-    return: dict，包含配置项。
-    """
-    config_path = "config.yaml"
-    if not os.path.exists(config_path):
-        raise FileNotFoundError(f"配置文件 {config_path} 不存在，请创建该文件并添加所需配置。")
-    
-    with open(config_path, "r", encoding="utf-8") as file:
-        config = yaml.safe_load(file)
-    return config
+_initialized = False
+MANUALLY_EXTRACT_IMAGES = False
+model = None
+client = None
 
 
-def initialize_agent():
-    """
-    初始化代理程序。
+def _ensure_initialized():
+    """延迟初始化 LLM 客户端，首次调用时执行，后续跳过。"""
+    global _initialized, MANUALLY_EXTRACT_IMAGES, model, client
+    if _initialized:
+        return
 
-    功能：
-    - 设置全局变量 `MANUALLY_EXTRACT_IMAGES`，用于控制是否手动提取 PDF 图片。
-    - 设置模型名称，默认为 'deepseek'。
-
-    注意：
-    - 该函数目前仅初始化了一些变量，未包含实际的逻辑处理。
-    """
-    # 是否手动提取 PDF 图片
     MANUALLY_EXTRACT_IMAGES = False
-    # 设置模型名称
-    MODEL = 'qwen'
     MODEL = 'deepseek'
-    config = load_config()
-    # OPENAI_API_KEY"
-    # "DASHSCOPE_API_KEY"
-    # print(config)
-    try:
-        # 从配置文件或环境变量中获取 OpenAI API 密钥
-        if API_KEYS.get('openai'):
-            api_key = API_KEYS['openai']
-        elif config.get("llm_api_key"):
-            api_key = config["llm_api_key"]
-        else:
-            raise ValueError("请在 config.yaml 或环境变量中设置 OPENAI_API_KEY")
 
-        # 从配置文件或环境变量中获取 DashScope API 密钥
-        if API_KEYS.get('dashscope'):
-            dashscope.api_key = API_KEYS['dashscope']
-        elif config.get("dashscope_api_key"):
-            dashscope.api_key = config["dashscope_api_key"]
-        else:
-            raise ValueError("请在 config.yaml 或环境变量中设置 DASHSCOPE_API_KEY")
-    except KeyError as e:
-            print(f"配置文件中缺少必要的键: {e}")
-        
+    config_path = "config.yaml"
+    if os.path.exists(config_path):
+        with open(config_path, "r", encoding="utf-8") as f:
+            config = yaml.safe_load(f) or {}
+    else:
+        config = {}
+
+    # 解析 LLM API Key
+    api_key = LLM_API_KEY or config.get("llm_api_key")
+    if not api_key:
+        raise ValueError("请在 config.yaml 或环境变量 LLM_API_KEY 中设置 API Key")
+
+    # 解析 DashScope API Key
+    ds_key = DASHSCOPE_API_KEY or config.get("dashscope_api_key")
+    if ds_key:
+        dashscope.api_key = ds_key
 
     if MODEL == 'qwen':
         model = 'qwen-max'
         url = 'https://dashscope.aliyuncs.com/compatible-mode/v1'
+        client = OpenAI(api_key=ds_key, base_url=url)
     elif MODEL == 'deepseek':
         model = 'deepseek-chat'
         url = 'https://api.deepseek.com/v1'
-# 初始化 OpenAI 客户端
-# 验证当前使用的Python路径
-    logging.info("当前Python解释器路径: %s", sys.executable)
-    if MODEL == 'qwen':
-        client = OpenAI(
-        api_key=dashscope.api_key,
-        base_url=url
-    )
-    elif MODEL == 'deepseek':
-        client = OpenAI(
-        api_key = api_key,
-        base_url=url
-    )
-    # rm -rf ./cache on windows
-    # if os.path.exists("./cache"):
-    #     shutil.rmtree("./cache")
-    os.makedirs("./cache", exist_ok=True)
-    return MANUALLY_EXTRACT_IMAGES, model, client
+        client = OpenAI(api_key=api_key, base_url=url)
 
-MANUALLY_EXTRACT_IMAGES, model, client = initialize_agent()
+    logging.info("LLM 客户端初始化完成: model=%s", model)
+    os.makedirs("./cache", exist_ok=True)
+    _initialized = True
 
 
 def _parse_json_response(raw: str):
@@ -154,10 +125,43 @@ def generate_video_proceedings(text):
     prompt = get_prompt(inspect.currentframe().f_code.co_name)
     return create_chat_completion(prompt, text)
 
-def generate_structured_video_plan(text):
+def generate_structured_video_plan(text, word_budget: int = 1000):
+    """生成结构化视频脚本（5段式：opening → intro → method → results → conclusion）。
+
+    Returns:
+        dict: 包含 opening/intro/method/results 等 key，
+              每个 value 包含 script 和 visual_prompt 字段。
+              如果解析失败返回空字典。
+    """
     prompt = get_prompt(inspect.currentframe().f_code.co_name)
+    prompt = prompt + f"\n总字数预算约{word_budget}字。"
     raw = create_chat_completion(prompt, text)
-    return _parse_json_response(raw)
+    plan = _parse_json_response(raw)
+    if not plan:
+        logging.warning("结构化脚本生成失败，回退为普通摘要")
+    return plan
+
+
+def structured_plan_to_text(plan: dict) -> str:
+    """将结构化脚本转换为连续文本，供 TTS 使用。
+
+    按 opening → intro → method → results 顺序拼接 script 字段。
+    """
+    if not plan:
+        return ""
+    sections = ["opening", "intro", "method", "results"]
+    parts = []
+    for section in sections:
+        section_data = plan.get(section, {})
+        if isinstance(section_data, dict):
+            script = section_data.get("script", "")
+        elif isinstance(section_data, str):
+            script = section_data
+        else:
+            script = ""
+        if script:
+            parts.append(script)
+    return "\n".join(parts)
 
 def get_paper_demo_website(text):
     prompt = get_prompt(inspect.currentframe().f_code.co_name)
@@ -178,24 +182,41 @@ def get_paper_demo_website(text):
             return ''
     else:
         logging.warning("未找到 JSON 内容")
-    if parsed_json['state'] not in ['0','1',0,1]:
-        logging.warning("state值不在范围内")
         return ''
-    if parsed_json['state']=='1'or parsed_json['state']==1:
-        return parsed_json['url']
+    # 安全访问 key，防止 KeyError
+    state = parsed_json.get('state')
+    if state not in ['0', '1', 0, 1]:
+        logging.warning("state值不在范围内: %s", state)
+        return ''
+    if state == '1' or state == 1:
+        return parsed_json.get('url', '')
     else:
         logging.warning("未找到视频网址")
         return ''
 
-def create_chat_completion(prompt, user_content=None):
+def create_chat_completion(prompt, user_content=None, max_retries=3):
+    """调用 LLM 生成内容，自带指数退避重试。"""
+    _ensure_initialized()
+    import time as _time
     messages = [{"role": "system", "content": prompt}]
     if user_content:
         messages.append({"role": "user", "content": user_content})
-    response = client.chat.completions.create(
-        model=model,
-        messages=messages
-    )
-    return response.choices[0].message.content
+
+    for attempt in range(max_retries):
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=messages
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            wait = 2 ** attempt
+            logging.warning(f"LLM 调用失败 (第{attempt+1}次), {wait}s 后重试: {e}")
+            if attempt < max_retries - 1:
+                _time.sleep(wait)
+            else:
+                logging.error(f"LLM 调用最终失败: {e}")
+                raise
 
 def get_captions_from_page(text: str = ''):
     prompt = get_prompt(inspect.currentframe().f_code.co_name, text)

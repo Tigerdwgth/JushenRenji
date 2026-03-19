@@ -33,7 +33,7 @@ MCP_SERVER_URL = "http://localhost:18060/mcp"
 
 # 项目根目录（从本文件向上4级）
 _FILE_DIR = os.path.dirname(os.path.abspath(__file__))
-_PROJECT_ROOT = os.path.abspath(os.path.join(_FILE_DIR, "../../../.."))
+_PROJECT_ROOT = os.path.abspath(os.path.join(_FILE_DIR, "../.."))
 
 # Docker 挂载目录（放在项目 tmp 目录下）
 MCP_DATA_DIR = os.path.join(_PROJECT_ROOT, "tmp", "xhs", "data")
@@ -69,6 +69,36 @@ def _ensure_data_dirs():
     """确保 Docker 挂载目录存在。"""
     os.makedirs(MCP_DATA_DIR, exist_ok=True)
     os.makedirs(MCP_IMAGES_DIR, exist_ok=True)
+
+
+def _copy_to_docker_mount(src_path: str, subdir: str = "images") -> str:
+    """将宿主机文件复制到 Docker 挂载目录，返回容器内路径。
+
+    使用安全的 ASCII 文件名避免 Docker 容器内的编码问题。
+
+    Args:
+        src_path: 宿主机上的文件绝对路径
+        subdir: 挂载子目录 ("images" 或 "data")
+
+    Returns:
+        容器内路径，如 /app/images/xhs_upload_0a1b.png
+    """
+    import hashlib
+
+    _ensure_data_dirs()
+    mount_dir = MCP_IMAGES_DIR if subdir == "images" else MCP_DATA_DIR
+    container_prefix = "/app/images" if subdir == "images" else "/app/data"
+
+    # 生成安全的 ASCII 文件名：hash 前缀 + 原始扩展名
+    _, ext = os.path.splitext(src_path)
+    short_hash = hashlib.md5(src_path.encode()).hexdigest()[:8]
+    safe_name = f"xhs_upload_{short_hash}{ext}"
+    dst_path = os.path.join(mount_dir, safe_name)
+
+    shutil.copy2(src_path, dst_path)
+    logger.info("已复制文件到 Docker 挂载目录: %s -> %s", os.path.basename(src_path), safe_name)
+
+    return f"{container_prefix}/{safe_name}"
 
 
 def _start_service_via_docker() -> bool:
@@ -187,42 +217,140 @@ def ensure_mcp_service() -> bool:
 # MCP JSON-RPC 底层调用
 # ---------------------------------------------------------------------------
 
-def _call_tool(tool_name: str, arguments: dict = None) -> Optional[dict]:
+# 模块级 MCP session 缓存（session_id + requests.Session）
+_mcp_session: Optional["requests.Session"] = None
+_mcp_session_id: Optional[str] = None
+_mcp_call_id: int = 0
+
+
+def _ensure_mcp_session() -> bool:
+    """初始化 MCP session（initialize + notifications/initialized），缓存复用。"""
+    import requests as _req
+
+    global _mcp_session, _mcp_session_id, _mcp_call_id
+
+    if _mcp_session is not None and _mcp_session_id is not None:
+        return True
+
+    _mcp_session = _req.Session()
+    headers = {"Content-Type": "application/json"}
+
+    try:
+        resp = _mcp_session.post(
+            MCP_SERVER_URL,
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "paperagent", "version": "1.0"},
+                },
+            },
+            headers=headers,
+            timeout=30,
+        )
+        resp.raise_for_status()
+        sid = resp.headers.get("mcp-session-id") or resp.headers.get("Mcp-Session-Id")
+        if not sid:
+            logger.error("MCP initialize 返回中缺少 Mcp-Session-Id")
+            _mcp_session = None
+            return False
+        _mcp_session_id = sid
+        _mcp_call_id = 1
+        logger.info("MCP session 已建立: %s", sid)
+
+        # 发送 initialized 通知
+        _mcp_session.post(
+            MCP_SERVER_URL,
+            json={"jsonrpc": "2.0", "method": "notifications/initialized"},
+            headers={**headers, "Mcp-Session-Id": sid},
+            timeout=10,
+        )
+        return True
+    except Exception as exc:
+        logger.error("MCP session 初始化失败: %s", exc)
+        _mcp_session = None
+        _mcp_session_id = None
+        return False
+
+
+def _call_tool(tool_name: str, arguments: dict = None, timeout: int = 120) -> Optional[dict]:
     """
     向 MCP 服务器发起 tools/call 请求，返回解析后的结果字典或 None。
 
-    MCP HTTP 标准格式：
-        method = "tools/call"
-        params = {"name": <tool>, "arguments": <args>}
+    自动管理 MCP session（initialize → Mcp-Session-Id）。
+
+    Args:
+        tool_name: MCP 工具名称
+        arguments: 工具参数
+        timeout: HTTP 请求超时（秒），默认 120 秒
     """
-    import requests
+    import requests as _req
+
+    global _mcp_session, _mcp_session_id, _mcp_call_id
 
     if not ensure_mcp_service():
         return None
 
+    if not _ensure_mcp_session():
+        return None
+
+    _mcp_call_id += 1
     payload = {
         "jsonrpc": "2.0",
-        "id": 1,
+        "id": _mcp_call_id,
         "method": "tools/call",
         "params": {
             "name": tool_name,
             "arguments": arguments or {},
         },
     }
+    headers = {
+        "Content-Type": "application/json",
+        "Mcp-Session-Id": _mcp_session_id,
+    }
 
     try:
-        resp = requests.post(MCP_SERVER_URL, json=payload, timeout=60)
+        resp = _mcp_session.post(MCP_SERVER_URL, json=payload, headers=headers, timeout=timeout)
         resp.raise_for_status()
         body = resp.json()
-    except requests.exceptions.ConnectionError:
+    except _req.exceptions.ConnectionError:
         logger.error("无法连接到 MCP 服务: %s", MCP_SERVER_URL)
+        # 重置 session 以便下次重建
+        _mcp_session = None
+        _mcp_session_id = None
         return None
     except Exception as exc:
         logger.error("HTTP 请求失败: %s", exc)
         return None
 
     if "error" in body:
-        logger.error("MCP 返回错误: %s", body["error"])
+        err = body["error"]
+        logger.error("MCP 返回错误: %s", err)
+        # 如果 session 失效，重置并重试一次
+        if "session" in str(err).lower() or "initialization" in str(err).lower():
+            logger.info("MCP session 可能已失效，尝试重建...")
+            _mcp_session = None
+            _mcp_session_id = None
+            if _ensure_mcp_session():
+                _mcp_call_id += 1
+                payload["id"] = _mcp_call_id
+                headers["Mcp-Session-Id"] = _mcp_session_id
+                try:
+                    resp = _mcp_session.post(MCP_SERVER_URL, json=payload, headers=headers, timeout=60)
+                    body = resp.json()
+                    if "error" not in body:
+                        result = body.get("result", {})
+                        if isinstance(result, dict) and result.get("isError"):
+                            content_list = result.get("content", [])
+                            err_text = content_list[0].get("text", "") if content_list else ""
+                            logger.error("工具执行错误: %s", err_text)
+                            return None
+                        return result
+                except Exception:
+                    pass
         return None
 
     result = body.get("result", {})
@@ -307,8 +435,13 @@ def check_login_status() -> bool:
             logger.info("登录状态: %s", "已登录" if logged_in else "未登录")
             return bool(logged_in)
         except json.JSONDecodeError:
-            # 有些实现直接返回布尔字符串
-            logged_in = text.strip().lower() in ("true", "1", "yes", "logged_in")
+            # 有些实现直接返回布尔字符串或中文状态文本
+            text_lower = text.strip().lower()
+            logged_in = (
+                text_lower in ("true", "1", "yes", "logged_in")
+                or "已登录" in text
+                or "logged in" in text_lower
+            )
             return logged_in
 
     return False
@@ -405,18 +538,32 @@ class XiaohongshuMCPUploader:
             logger.warning("内容超过1000字，截取")
             content = content[:1000]
 
+        # 将图片复制到 Docker 挂载目录，使用容器内路径
+        container_images = []
+        for img_path in images:
+            if os.path.exists(img_path):
+                container_images.append(_copy_to_docker_mount(img_path, "images"))
+            else:
+                logger.warning("图片文件不存在，跳过: %s", img_path)
+
+        if not container_images:
+            logger.error("没有有效的图片文件")
+            return None
+
+        # MCP 工具期望中文可见范围
+        _visibility_map = {"public": "公开可见", "private": "仅自己可见", "friends": "仅互关好友可见"}
         arguments: dict = {
             "title": title,
             "content": content,
-            "images": images,
-            "visibility": visible_level,
+            "images": container_images,
+            "visibility": _visibility_map.get(visible_level, visible_level),
             "is_original": is_original,
         }
         if tags:
             arguments["tags"] = tags
 
-        logger.info("发布图文笔记: %s（%d 张图）", title, len(images))
-        result = _call_tool("publish_content", arguments)
+        logger.info("发布图文笔记: %s（%d 张图）", title, len(container_images))
+        result = _call_tool("publish_content", arguments, timeout=300)
         if result is None:
             return None
 
@@ -436,23 +583,37 @@ class XiaohongshuMCPUploader:
         cover_path: Optional[str] = None,
         visible_level: str = "public",
         is_original: bool = True,
+        tags: Optional[List[str]] = None,
     ) -> Optional[dict]:
         """发布视频笔记（publish_with_video 工具）。"""
         if len(title) > 20:
             title = title[:20]
 
+        # 将视频复制到 Docker 挂载目录，使用容器内路径
+        container_video = _copy_to_docker_mount(video_path, "data")
+
         arguments: dict = {
             "title": title,
             "content": content,
-            "video_path": video_path,
-            "visibility": visible_level,
-            "is_original": is_original,
+            "video": container_video,
         }
+        # 已知限制：MCP publish_with_video 工具当前不支持 cover 参数（传入会返回 invalid params）
+        # cover_path 参数保留在接口中，待 MCP 上游支持后启用
         if cover_path:
-            arguments["cover_path"] = cover_path
+            logger.warning(
+                "小红书 MCP publish_with_video 不支持 cover 参数，封面将被忽略。"
+                "视频发布后请在小红书 App 中手动设置封面。(cover_path=%s)",
+                cover_path,
+            )
+        # MCP 工具期望中文可见范围
+        _visibility_map = {"public": "公开可见", "private": "仅自己可见", "friends": "仅互关好友可见"}
+        if visible_level:
+            arguments["visibility"] = _visibility_map.get(visible_level, visible_level)
+        if tags:
+            arguments["tags"] = tags
 
         logger.info("发布视频笔记: %s", title)
-        result = _call_tool("publish_with_video", arguments)
+        result = _call_tool("publish_with_video", arguments, timeout=600)
         if result is None:
             return None
 
@@ -551,6 +712,7 @@ def publish_video(
     content: str,
     video_path: str,
     cover_path: Optional[str] = None,
+    tags: Optional[List[str]] = None,
 ) -> Optional[dict]:
     """发布视频（orchestrator 兼容接口）。"""
     return upload_to_xiaohongshu(
@@ -559,6 +721,7 @@ def publish_video(
         video_path=video_path,
         cover_path=cover_path,
         is_video=True,
+        tags=tags,
     )
 
 

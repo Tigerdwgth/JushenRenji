@@ -68,11 +68,22 @@ if __name__ == "__main__":
         if not filename:
             raise ValueError("参数 --filename 不能为空，例如 --filename cs.RO")
         today=datetime.datetime.now()
-        yesterday=today-datetime.timedelta(days=400)
-        yesterday=yesterday.strftime(r"%Y-%m-%d")
+        # arXiv 周末不更新，周一需要回退到上周五
+        # 周一(0)->回退3天到周五, 周日(6)->回退2天到周五, 周六(5)->回退1天到周五
+        weekday = today.weekday()
+        if weekday == 0:  # 周一
+            delta_days = 3
+        elif weekday == 6:  # 周日
+            delta_days = 2
+        elif weekday == 5:  # 周六
+            delta_days = 1
+        else:
+            delta_days = 1
+        target_date = today - datetime.timedelta(days=delta_days)
+        yesterday = target_date.strftime(r"%Y-%m-%d")
         today=today.strftime(r"%Y-%m-%d")
-        logging.info("今天是%s,昨天是%s", today, yesterday)
-        path,titles,cn_titles=generate_daily_arxiv_summary(query=filename,max_papers=1,date=str(yesterday),long_or_short=video_length,target_duration=target_duration)
+        logging.info("今天是%s,查询论文日期是%s", today, yesterday)
+        path, titles, cn_titles, summaries = generate_daily_arxiv_summary(query=filename,max_papers=1,date=str(yesterday),long_or_short=video_length,target_duration=target_duration)
         if not path or not os.path.exists(path):
             raise RuntimeError(f"视频生成失败，输出文件不存在: {path}")
         logging.info("本地视频生成完成: %s", path)
@@ -95,6 +106,7 @@ if __name__ == "__main__":
                 video_desc=video_desc,
                 cn_titles=cn_titles,
                 origin_titles=titles,
+                summaries=summaries,
                 bilibili_tid=188,
             )
             logging.info("上传结果汇总: %s", upload_results)

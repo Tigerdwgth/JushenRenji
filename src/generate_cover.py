@@ -1,5 +1,7 @@
+import os
+
 from PIL import Image, ImageDraw, ImageFont
-from config import *
+from config import FONT_PATH
 def generate_cover(cover_pic, cover_title, output_path="./pic/cover.png"):
     """
     输入图片路径与标题，生成封面图片
