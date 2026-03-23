@@ -83,7 +83,13 @@ if __name__ == "__main__":
         yesterday = target_date.strftime(r"%Y-%m-%d")
         today=today.strftime(r"%Y-%m-%d")
         logging.info("今天是%s,查询论文日期是%s", today, yesterday)
-        path, titles, cn_titles, summaries = generate_daily_arxiv_summary(query=filename,max_papers=1,date=str(yesterday),long_or_short=video_length,target_duration=target_duration)
+        path, titles, cn_titles, summaries, paper_links, project_links = generate_daily_arxiv_summary(
+            query=filename,
+            max_papers=1,
+            date=str(yesterday),
+            long_or_short=video_length,
+            target_duration=target_duration,
+        )
         if not path or not os.path.exists(path):
             raise RuntimeError(f"视频生成失败，输出文件不存在: {path}")
         logging.info("本地视频生成完成: %s", path)
@@ -107,6 +113,8 @@ if __name__ == "__main__":
                 cn_titles=cn_titles,
                 origin_titles=titles,
                 summaries=summaries,
+                paper_links=paper_links,
+                project_links=project_links,
                 bilibili_tid=188,
             )
             logging.info("上传结果汇总: %s", upload_results)

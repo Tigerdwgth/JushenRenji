@@ -163,7 +163,22 @@ def _login_with_cookies(bili: BiliBili, cookies_dict: dict) -> bool:
             bili._BiliBili__session.cookies, cookies_dict
         )
         bili._BiliBili__bili_jct = cookies_dict.get("bili_jct", "")
-        logger.info("Cookie 注入成功")
+        nav_resp = bili._BiliBili__session.get(
+            "https://api.bilibili.com/x/web-interface/nav",
+            timeout=5,
+        )
+        nav_data = nav_resp.json()
+        if nav_data.get("code") != 0 or not nav_data.get("data", {}).get("isLogin"):
+            logger.error(
+                "B站 cookie 已失效或未登录: code=%s, message=%s",
+                nav_data.get("code"),
+                nav_data.get("message", ""),
+            )
+            return False
+        logger.info(
+            "Cookie 注入成功，当前登录账号: %s",
+            nav_data.get("data", {}).get("uname", "<unknown>"),
+        )
         return True
     except Exception as e:
         logger.error(f"Cookie 注入失败: {e}")

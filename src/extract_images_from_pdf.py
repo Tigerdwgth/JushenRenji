@@ -34,7 +34,7 @@ logging.basicConfig(
 # extract_images_from_pdf(PDF_PATH) 
 def extract_images_from_pdf(pdf_path, cnt=None, store_path='./pic/'):
     try:
-        analyzer = dd.get_dd_analyzer()  # instantiate the built-in analyzer similar to the Hugging Face space demo
+        analyzer = dd.get_dd_analyzer(config_overwrite=["USE_OCR=False"])  # 禁用OCR避免tesseract错误中断图片提取
         df = analyzer.analyze(path=pdf_path)  # setting up pipeline
         df.reset_state()  # Trigger some initialization
         doc = iter(df)

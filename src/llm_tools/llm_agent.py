@@ -1,10 +1,8 @@
 import os
 import re
-import dashscope
 import json
 import sys
 import shutil
-from openai import OpenAI
 import logging
 import yaml
 import inspect
@@ -13,6 +11,7 @@ from src.config import (
     CACHE_DIR, PIC_DIR, OUTPUT_DIR, FONT_PATH,
 )
 from src.llm_tools.prompts import prompts_dict
+from src.utils.title_cleaner import sanitize_generated_title
 
 # 配置日志记录
 logging.basicConfig(
@@ -36,6 +35,9 @@ def _ensure_initialized():
     global _initialized, MANUALLY_EXTRACT_IMAGES, model, client
     if _initialized:
         return
+
+    import dashscope
+    from openai import OpenAI
 
     MANUALLY_EXTRACT_IMAGES = False
     MODEL = 'deepseek'
@@ -115,7 +117,7 @@ def generate_video_title(text):
     ret_str = create_chat_completion(prompt, text)
     #使用正则表达式过滤掉不能出现在路径的字符
     ret_str = re.sub(r'[\\/:*?"<>|]', '', ret_str)
-    return ret_str
+    return sanitize_generated_title(ret_str)
 
 def generate_origin_title(text):
     prompt = get_prompt(inspect.currentframe().f_code.co_name)
@@ -373,4 +375,3 @@ def select_top_images(items: list, scores: list, top_n: int = 5) -> list:
     indexed.sort(key=lambda x: x[1], reverse=True)
     top_indices = sorted([idx for idx, _ in indexed[:top_n]])
     return [items[i] for i in top_indices]
-

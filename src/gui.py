@@ -31,12 +31,13 @@ def process_arxiv_summary(query, max_papers, long_or_short, status=gr.Progress()
         status(0.5, desc="正在生成摘要...")
         status(0.7, desc="正在创建视频...")
         
-        path, titles, cn_titles = generate_daily_arxiv_summary(
+        result = generate_daily_arxiv_summary(
             query=query.strip(), 
             max_papers=int(max_papers), 
             date=yesterday_str, 
             long_or_short=long_or_short
         )
+        path, titles, cn_titles = result[:3]
         
         status(0.9, desc="处理完成，准备显示...")
         

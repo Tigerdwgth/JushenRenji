@@ -150,16 +150,18 @@ def test_xhs_content_includes_origin_title():
     assert "BitVLA: 1-bit Vision-Language-Action Models" in content
 
 
-def test_xhs_content_includes_summary():
-    """小红书文案必须包含中文摘要"""
+def test_xhs_content_keeps_short_summary():
+    """小红书文案可保留精简摘要。"""
     content = _build_xhs_content(
         video_desc="",
         cn_titles=["中文标题"],
         origin_titles=["English Title"],
         summaries=["这是论文的中文摘要，描述了核心方法和实验结果"],
     )
+    assert "中文标题" in content
+    assert "English Title" in content
     assert "摘要：" in content
-    assert "中文摘要" in content
+    assert "核心方法和实验结果" in content
 
 
 def test_xhs_content_includes_cn_title():
@@ -196,6 +198,48 @@ def test_xhs_content_backward_compatible():
     assert "标题" in content
 
 
+def test_xhs_content_keeps_paper_link_but_omits_empty_project_link():
+    """小红书文案应保留论文链接，但空项目链接不应展示。"""
+    content = _build_xhs_content(
+        video_desc="",
+        cn_titles=["中文标题"],
+        origin_titles=["English Title"],
+        summaries=["这是一段摘要"],
+        paper_links=["https://arxiv.org/abs/2501.00001"],
+        project_links=[""],
+    )
+    assert "https://arxiv.org/abs/2501.00001" in content
+    assert "项目链接：" not in content
+
+
+def test_xhs_content_stays_brief_even_with_long_summary():
+    """小红书文案应控制在精简长度内。"""
+    content = _build_xhs_content(
+        video_desc="",
+        cn_titles=["中文标题"],
+        origin_titles=["English Title"],
+        summaries=["很长的摘要" * 200],
+        paper_links=["https://arxiv.org/abs/2501.00001"],
+        project_links=["https://example.com/project"],
+    )
+    assert len(content) <= 300
+    assert "论文链接：https://arxiv.org/abs/2501.00001" in content
+
+
+def test_xhs_content_includes_project_link_when_explicitly_provided():
+    """小红书文案仅在明确提供项目链接时才展示。"""
+    content = _build_xhs_content(
+        video_desc="",
+        cn_titles=["中文标题"],
+        origin_titles=["English Title"],
+        summaries=["这是一段摘要"],
+        paper_links=["https://arxiv.org/abs/2501.00001"],
+        project_links=["https://example.com/project"],
+    )
+    assert "https://arxiv.org/abs/2501.00001" in content
+    assert "https://example.com/project" in content
+
+
 def test_bilibili_desc_includes_origin_title():
     """B站描述必须包含论文原名"""
     desc = _build_bilibili_desc(
@@ -207,15 +251,17 @@ def test_bilibili_desc_includes_origin_title():
     assert "BitVLA: 1-bit VLA Models" in desc
 
 
-def test_bilibili_desc_includes_summary():
-    """B站描述必须包含中文摘要"""
+def test_bilibili_desc_keeps_titles_and_paper_link():
+    """B站简介应保留论文名和论文链接。"""
     desc = _build_bilibili_desc(
         video_desc="",
         cn_titles=["中文标题"],
         origin_titles=["Title"],
         summaries=["论文提出了全新的1比特量化方法"],
+        paper_links=["https://arxiv.org/abs/2501.00001"],
     )
-    assert "1比特量化方法" in desc
+    assert "Title" in desc
+    assert "https://arxiv.org/abs/2501.00001" in desc
 
 
 def test_bilibili_desc_fallback_no_summaries():
@@ -230,7 +276,7 @@ def test_bilibili_desc_fallback_no_summaries():
 
 
 def test_bilibili_desc_multi_papers():
-    """多篇论文时B站描述应包含所有论文信息"""
+    """多篇论文时B站简介应包含所有论文标题，并带各自摘要。"""
     desc = _build_bilibili_desc(
         video_desc="",
         cn_titles=["标题A", "标题B"],
@@ -243,8 +289,38 @@ def test_bilibili_desc_multi_papers():
     assert "摘要B" in desc
 
 
-def test_upload_passes_summaries_to_bilibili(monkeypatch, tmp_path):
-    """验证 summaries 被正确传递到B站描述中"""
+def test_bilibili_desc_keeps_paper_link_but_omits_empty_project_link():
+    """B站简介应保留论文链接，但空项目链接不应展示。"""
+    desc = _build_bilibili_desc(
+        video_desc="",
+        cn_titles=["中文标题"],
+        origin_titles=["English Title"],
+        summaries=["这是一段摘要"],
+        paper_links=["https://arxiv.org/abs/2501.00001"],
+        project_links=[""],
+    )
+    assert "https://arxiv.org/abs/2501.00001" in desc
+    assert "项目链接：" not in desc
+
+
+def test_bilibili_desc_stays_within_upload_limit():
+    """B站简介应在上传限制内。"""
+    desc = _build_bilibili_desc(
+        video_desc="",
+        cn_titles=["中文标题"],
+        origin_titles=["English Title"],
+        summaries=["很长的摘要" * 200],
+        paper_links=["https://arxiv.org/abs/2501.00001"],
+        project_links=["https://example.com/project"],
+    )
+    assert len(desc) <= 250
+    assert "English Title" in desc
+    assert "https://arxiv.org/abs/2501.00001" in desc
+    assert "https://example.com/project" in desc
+
+
+def test_upload_bilibili_desc_keeps_paper_link_and_omits_empty_project_link(monkeypatch, tmp_path):
+    """上传到 B站 时应保留论文链接，但不展示空项目链接。"""
     video = tmp_path / "video.mp4"
     video.write_bytes(b"x")
 
@@ -266,10 +342,51 @@ def test_upload_passes_summaries_to_bilibili(monkeypatch, tmp_path):
         cn_titles=["中文标题"],
         origin_titles=["English Paper Title"],
         summaries=["这是论文的中文摘要内容"],
+        paper_links=["https://arxiv.org/abs/2501.00001"],
+        project_links=[""],
     )
 
     assert "English Paper Title" in captured_desc["desc"]
-    assert "中文摘要" in captured_desc["desc"]
+    assert "https://arxiv.org/abs/2501.00001" in captured_desc["desc"]
+    assert "项目链接：" not in captured_desc["desc"]
+
+
+def test_upload_platform_descriptions_keep_paper_link_and_omit_empty_project_link(monkeypatch, tmp_path):
+    """上传时平台文案应保留论文链接，但空项目链接不应展示。"""
+    video = tmp_path / "video.mp4"
+    video.write_bytes(b"x")
+
+    captured = {}
+
+    def mock_bilibili(**kwargs):
+        captured["bilibili_desc"] = kwargs.get("desc", "")
+        return "BV1TEST"
+
+    def mock_xhs_video(**kwargs):
+        captured["xhs_content"] = kwargs.get("content", "")
+        return {"note_id": "XHS1"}
+
+    monkeypatch.setattr("src.distribution.orchestrator.upload_bilibili", mock_bilibili)
+    monkeypatch.setattr("src.distribution.orchestrator.upload_xiaohongshu_video", mock_xhs_video)
+
+    upload_generated_content(
+        platforms=["bilibili", "xiaohongshu"],
+        video_path=str(video),
+        cover_path=None,
+        video_title="测试",
+        video_tags="tag",
+        video_desc="原始描述",
+        cn_titles=["中文标题"],
+        origin_titles=["English Paper Title"],
+        summaries=["这是论文的中文摘要内容"],
+        paper_links=["https://arxiv.org/abs/2501.00001"],
+        project_links=[""],
+    )
+
+    assert "https://arxiv.org/abs/2501.00001" in captured["bilibili_desc"]
+    assert "项目链接：" not in captured["bilibili_desc"]
+    assert "https://arxiv.org/abs/2501.00001" in captured["xhs_content"]
+    assert "项目链接：" not in captured["xhs_content"]
 
 
 # =========================================================================

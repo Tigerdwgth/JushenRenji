@@ -6,6 +6,7 @@
 import os
 import logging
 import tempfile
+import time
 from typing import Optional, List, Tuple
 from moviepy import AudioFileClip, concatenate_audioclips
 from moviepy.audio.AudioClip import AudioArrayClip
@@ -26,7 +27,14 @@ if not audio_logger.handlers:
     audio_logger.addHandler(audio_handler)
 
 
-def safe_tts_save(ss, text: str, output_path: str, idx: int) -> Optional[str]:
+def safe_tts_save(
+    ss,
+    text: str,
+    output_path: str,
+    idx: int,
+    max_retries: int = 3,
+    retry_delay: float = 1.0,
+) -> Optional[str]:
     """
     安全的TTS处理：验证数据、保存文件、验证音频
 
@@ -41,59 +49,79 @@ def safe_tts_save(ss, text: str, output_path: str, idx: int) -> Optional[str]:
     """
     audio_logger.info(f"开始TTS处理 idx={idx}, 文本长度={len(text)}")
 
-    try:
-        # 调用TTS
-        data = ss.call(text=text)
-        audio_logger.debug(f"TTS返回数据类型: {type(data)}")
+    attempts = max(1, max_retries)
 
-        # 验证TTS返回数据
-        if not data:
-            audio_logger.error(f"TTS返回空数据 idx={idx}")
+    for attempt in range(1, attempts + 1):
+        try:
+            # 调用TTS
+            data = ss.call(text=text)
+            audio_logger.debug(f"TTS返回数据类型: {type(data)}")
+
+            # 验证TTS返回数据
+            if not data:
+                audio_logger.error(f"TTS返回空数据 idx={idx} attempt={attempt}")
+                if attempt < attempts:
+                    time.sleep(retry_delay * attempt)
+                    continue
+                return None
+
+            if len(data) < 100:
+                audio_logger.warning(f"TTS返回数据过小 idx={idx}, size={len(data)} attempt={attempt}")
+                if attempt < attempts:
+                    time.sleep(retry_delay * attempt)
+                    continue
+                return None
+
+            # 验证音频数据头部（WAV格式）
+            if len(data) < 12:
+                audio_logger.error(f"音频数据过短 idx={idx}, 长度={len(data)} attempt={attempt}")
+                if attempt < attempts:
+                    time.sleep(retry_delay * attempt)
+                    continue
+                return None
+
+            # 检查可能的音频格式
+            is_wav = data.startswith(b'RIFF') and b'WAVE' in data[:12]
+            is_mp3 = data.startswith(b'ID3') or b'.mp3' in data[:10].lower()
+            is_aac = data.startswith(b'ADIF') or data.startswith(b'ADTS')
+            is_flac = data.startswith(b'fLaC')
+            is_ogg = data.startswith(b'OggS')
+
+            if not any([is_wav, is_mp3, is_aac, is_flac, is_ogg]):
+                # 记录前20字节的十六进制用于调试
+                hex_preview = ' '.join(f'{b:02x}' for b in data[:20])
+                audio_logger.warning(f"未知音频格式 idx={idx}, 前20字节: {hex_preview}")
+                # 不直接返回None，尝试保存看是否是有效音频
+
+            # 确保目录存在
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+            # 原子写入（先写临时文件，再重命名）
+            temp_path = output_path + '.tmp'
+            with open(temp_path, 'wb') as f:
+                f.write(data)
+            os.replace(temp_path, output_path)
+
+            audio_logger.info(f"TTS音频保存成功: {output_path}, 大小={len(data)}字节")
+
+            # 验证生成的音频文件
+            if not validate_audio_file(output_path):
+                audio_logger.error(f"音频文件验证失败 idx={idx} attempt={attempt}")
+                if attempt < attempts:
+                    time.sleep(retry_delay * attempt)
+                    continue
+                return None
+
+            return output_path
+
+        except Exception as e:
+            audio_logger.error(f"TTS处理异常 idx={idx} attempt={attempt}: {e}", exc_info=True)
+            if attempt < attempts:
+                time.sleep(retry_delay * attempt)
+                continue
             return None
 
-        if len(data) < 100:
-            audio_logger.warning(f"TTS返回数据过小 idx={idx}, size={len(data)}")
-            return None
-
-        # 验证音频数据头部（WAV格式）
-        if len(data) < 12:
-            audio_logger.error(f"音频数据过短 idx={idx}, 长度={len(data)}")
-            return None
-
-        # 检查可能的音频格式
-        is_wav = data.startswith(b'RIFF') and b'WAVE' in data[:12]
-        is_mp3 = data.startswith(b'ID3') or b'.mp3' in data[:10].lower()
-        is_aac = data.startswith(b'ADIF') or data.startswith(b'ADTS')
-        is_flac = data.startswith(b'fLaC')
-        is_ogg = data.startswith(b'OggS')
-
-        if not any([is_wav, is_mp3, is_aac, is_flac, is_ogg]):
-            # 记录前20字节的十六进制用于调试
-            hex_preview = ' '.join(f'{b:02x}' for b in data[:20])
-            audio_logger.warning(f"未知音频格式 idx={idx}, 前20字节: {hex_preview}")
-            # 不直接返回None，尝试保存看是否是有效音频
-
-        # 确保目录存在
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
-
-        # 原子写入（先写临时文件，再重命名）
-        temp_path = output_path + '.tmp'
-        with open(temp_path, 'wb') as f:
-            f.write(data)
-        os.replace(temp_path, output_path)
-
-        audio_logger.info(f"TTS音频保存成功: {output_path}, 大小={len(data)}字节")
-
-        # 验证生成的音频文件
-        if not validate_audio_file(output_path):
-            audio_logger.error(f"音频文件验证失败 idx={idx}")
-            return None
-
-        return output_path
-
-    except Exception as e:
-        audio_logger.error(f"TTS处理异常 idx={idx}: {e}", exc_info=True)
-        return None
+    return None
 
 
 def validate_audio_file(file_path: str) -> bool:

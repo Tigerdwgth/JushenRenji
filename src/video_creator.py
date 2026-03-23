@@ -12,7 +12,10 @@ import logging
 import json
 from config import DASHSCOPE_API_KEY, FONT_PATH
 import nltk
-nltk.download('punkt_tab')
+try:
+    nltk.data.find('tokenizers/punkt_tab')
+except LookupError:
+    nltk.download('punkt_tab', quiet=True)
 from nltk.tokenize import sent_tokenize
 
 # 设置DashScope API密钥
@@ -574,7 +577,8 @@ class VideoCreator:
 
         tts_model = "cosyvoice-v1"
         tts_voice = "longxiaochun"
-        TTS_MAX_WORKERS = 6
+        TTS_MAX_WORKERS = max(1, int(os.getenv("TTS_MAX_WORKERS", "6")))
+        TTS_SERIAL_RETRY_ATTEMPTS = max(0, int(os.getenv("TTS_SERIAL_RETRY_ATTEMPTS", "1")))
 
         def _tts_single(text, audio_file, tag):
             try:
@@ -637,6 +641,31 @@ class VideoCreator:
 
         tts_elapsed = _time.time() - tts_start_time
         audio_logger.info(f"TTS 并发合成完成: {len(tts_results)}/{len(tts_tasks)} 成功, 耗时 {tts_elapsed:.1f}s")
+
+        failed_tasks = [
+            (text, audio_file, tag, task_type, idx, sent_idx)
+            for (text, audio_file, tag, task_type, idx, sent_idx) in tts_tasks
+            if (task_type, idx, sent_idx) not in tts_results
+        ]
+
+        if failed_tasks and TTS_SERIAL_RETRY_ATTEMPTS > 0:
+            audio_logger.warning(
+                f"TTS 首轮失败 {len(failed_tasks)} 个任务，开始串行补偿重试（轮数={TTS_SERIAL_RETRY_ATTEMPTS}）"
+            )
+            for round_idx in range(TTS_SERIAL_RETRY_ATTEMPTS):
+                if not failed_tasks:
+                    break
+                remaining_tasks = []
+                for text, audio_file, tag, task_type, idx, sent_idx in failed_tasks:
+                    result = _tts_single(text, audio_file, tag)
+                    if result:
+                        tts_results[(task_type, idx, sent_idx)] = result
+                    else:
+                        remaining_tasks.append((text, audio_file, tag, task_type, idx, sent_idx))
+                failed_tasks = remaining_tasks
+                audio_logger.info(
+                    f"TTS 串行补偿第 {round_idx + 1} 轮结束，剩余失败 {len(failed_tasks)} 个"
+                )
 
         # 按原始顺序重组结果
         expl_sentence_files = []

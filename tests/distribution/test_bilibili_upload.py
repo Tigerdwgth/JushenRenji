@@ -153,9 +153,53 @@ class TestLoginWithCookies:
         mock_bili = MagicMock()
         mock_bili._BiliBili__session = MagicMock()
         mock_bili._BiliBili__session.cookies = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "code": 0,
+            "data": {"isLogin": True, "uname": "tester"},
+        }
+        mock_bili._BiliBili__session.get.return_value = mock_resp
 
         cookies = {"SESSDATA": "s", "bili_jct": "j", "DedeUserID": "u"}
         result = bilibili._login_with_cookies(mock_bili, cookies)
 
         assert result is True
         assert mock_bili._BiliBili__bili_jct == "j"
+
+    def test_returns_false_when_nav_reports_not_logged_in(self):
+        mock_bili = MagicMock()
+        mock_bili._BiliBili__session = MagicMock()
+        mock_bili._BiliBili__session.cookies = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "code": -101,
+            "message": "账号未登录",
+            "data": {"isLogin": False},
+        }
+        mock_bili._BiliBili__session.get.return_value = mock_resp
+
+        cookies = {"SESSDATA": "expired", "bili_jct": "j", "DedeUserID": "u"}
+        result = bilibili._login_with_cookies(mock_bili, cookies)
+
+        assert result is False
+
+    def test_upload_stops_before_preupload_when_login_invalid(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(bilibili, "_resolve_cookies", lambda: {"SESSDATA": "expired"})
+
+        video_path = tmp_path / "video.mp4"
+        video_path.write_bytes(b"fake video data")
+
+        mock_bili = MagicMock()
+        mock_bili.__enter__.return_value = mock_bili
+        mock_bili.__exit__.return_value = None
+
+        with patch.object(bilibili, "BiliBili", return_value=mock_bili):
+            with patch.object(bilibili, "_login_with_cookies", return_value=False):
+                result = bilibili.upload(
+                    video_path=str(video_path),
+                    title="test",
+                    tags="tag1",
+                )
+
+        assert result is None
+        mock_bili.upload_file.assert_not_called()

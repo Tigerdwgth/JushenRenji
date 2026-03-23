@@ -21,6 +21,7 @@
 │   ├── utils
 │   │   └── audio_helpers.py  # TTS/音频安全处理
 │   ├── main.py
+│   ├── website_video_pipeline.py  # 网页顶部视频转发（下载并双平台发布）
 │   └── video_creator.py      # 视频合成（Ken Burns + 转场 + 字幕）
 ├── tests                     # pytest 单元测试
 │   ├── distribution/
@@ -40,6 +41,7 @@
 6. **TTS并发合成**：DashScope cosyvoice-v1，6线程并发加速。
 7. **图片智能筛选**：LLM 打分选取最重要的图片，Qwen-VL 生成图片讲解。
 8. **Demo 视频下载**：自动从论文项目主页提取并下载演示视频，嵌入最终视频开头。
+9. **网页视频转发**：从研究网页提取顶部主视频、封面和页面摘要，直接转发到 B站 与 小红书。
 
 ## 使用说明
 
@@ -190,12 +192,41 @@ python src/main.py --filename “{papername}” --platforms none
 
 # 控制视频时长（默认300秒=5分钟）
 python src/main.py --filename “{papername}” --target_duration 180 --platforms none
+
+# 将研究网页顶部主视频直接转发到 B站 + 小红书
+python src/website_video_pipeline.py --url "https://www.pi.website/research/rlt"
+
+# 仅转发到 B站
+python src/website_video_pipeline.py --url "https://www.pi.website/research/rlt" --platforms bilibili
 ```
 
 说明：
 - `--platforms` 支持 `bilibili,xiaohongshu` 的逗号组合，默认值为 `bilibili,xiaohongshu`。
 - 平台上传采用”部分成功”策略：某一个平台失败不会阻塞另一个平台。
 - `--target_duration` 控制目标视频时长（秒），默认300秒。多篇论文时自动均分到每篇。系统通过文字预算、图片筛选和TTS后裁剪三层机制控制时长。
+
+## 网页视频转发 Pipeline
+
+适用场景：你已经有一个研究网页，希望直接抓取网页顶部主视频并发布到 B站、小红书，而不是重新生成讲解视频。
+
+默认行为：
+- 自动抓取页面标题、描述、封面图、PDF 链接与顶部主视频地址
+- 自动优先生成中文发布标题；若 LLM 不可用则回退到关键词规则标题
+- 下载视频到 `output/`
+- 复用现有 B站与小红书上传模块完成发布
+- 默认平台为 `bilibili,xiaohongshu`
+
+示例：
+
+```bash
+python src/website_video_pipeline.py --url "https://www.pi.website/research/rlt"
+python src/website_video_pipeline.py --url "https://www.pi.website/research/rlt" --platforms xiaohongshu
+```
+
+说明：
+- 当前实现面向 Next.js 研究页，优先提取页面顶部主视频
+- 发布标题默认优先使用中文标题，原英文标题仍会保留在简介/正文中
+- 小红书视频发布仍受 MCP 限制，上传时可能忽略封面，需在 App 内手动设置
 
 ---
 

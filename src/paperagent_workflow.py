@@ -442,6 +442,8 @@ def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().str
     processed_papers = []
     origin_titles = []
     summaries = []  # 每篇论文的中文摘要，用于上传平台文案
+    paper_links = []
+    project_links = []
 
     # ---- 时长预算 ----
     if len(papers) > 1:
@@ -546,8 +548,6 @@ def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().str
             ]
         )
         
-        cn_titles.append(cn_title)
-        summaries.append(short_summary or "")
         if not short_summary:
             logging.warning(f"摘要生成失败，跳过论文: {paper.title}")
             continue
@@ -582,6 +582,12 @@ def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().str
         generated_part_paths.append(part_video_path)
         processed_papers.append(paper)
         origin_titles.append(origin_title)
+        cn_titles.append(cn_title)
+        summaries.append(short_summary or "")
+        paper_links.append((paper.link or "").strip())
+        # demo_website 主要用于抓取演示视频，缺少可靠校验时不默认当作项目链接对外发布，
+        # 避免把数据集/机构主页误写进简介。
+        project_links.append("")
     
     # 如果没有任何可用视频片段，抛出异常
     if not generated_part_paths:
@@ -605,7 +611,7 @@ def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().str
         if not os.path.exists(new_part_video_path):
             raise RuntimeError(f"单篇视频输出失败: {new_part_video_path}")
         logging.info(f"单篇视频已成功生成，路径为: {new_part_video_path}")
-        return new_part_video_path, origin_titles, cn_titles, summaries
+        return new_part_video_path, origin_titles, cn_titles, summaries, paper_links, project_links
 
     # 合并所有论文的视频片段（至少一段）
     video_clips = [VideoFileClip(path) for path in generated_part_paths]
@@ -638,4 +644,4 @@ def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().str
     if not os.path.exists(final_video_path):
         raise RuntimeError(f"日报视频输出失败: {final_video_path}")
     logging.info(f"日报视频已成功生成，路径为: {final_video_path}")
-    return final_video_path, origin_titles, cn_titles, summaries
+    return final_video_path, origin_titles, cn_titles, summaries, paper_links, project_links

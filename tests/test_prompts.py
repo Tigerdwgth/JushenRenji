@@ -25,3 +25,14 @@ def test_prompts_not_empty():
 
     for key, value in prompts_dict.items():
         assert value and len(value.strip()) > 0, f"prompt '{key}' 为空"
+
+
+def test_generate_video_title_prompt_avoids_exaggerated_marketing():
+    """标题 prompt 不应鼓励“首次/突破”等夸张宣传词。"""
+    from src.llm_tools.prompts import prompts_dict
+
+    prompt = prompts_dict["generate_video_title"]
+    assert "可包含" not in prompt
+    assert "禁止使用" in prompt
+    assert "首次" in prompt
+    assert "突破" in prompt

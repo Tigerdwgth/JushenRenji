@@ -3,9 +3,21 @@ import logging
 import os
 from typing import Dict, List, Optional
 
-from .bilibili import upload as upload_bilibili
-from .xiaohongshu import publish_note as upload_xiaohongshu_note
-from .xiaohongshu import publish_video as upload_xiaohongshu_video
+try:
+    from .bilibili import upload as _upload_bilibili_impl
+    _BILIBILI_IMPORT_ERROR = None
+except Exception as exc:
+    _upload_bilibili_impl = None
+    _BILIBILI_IMPORT_ERROR = exc
+
+try:
+    from .xiaohongshu import publish_note as _upload_xiaohongshu_note_impl
+    from .xiaohongshu import publish_video as _upload_xiaohongshu_video_impl
+    _XHS_IMPORT_ERROR = None
+except Exception as exc:
+    _upload_xiaohongshu_note_impl = None
+    _upload_xiaohongshu_video_impl = None
+    _XHS_IMPORT_ERROR = exc
 
 logger = logging.getLogger(__name__)
 
@@ -14,6 +26,28 @@ VALID_PLATFORMS = set(DEFAULT_PLATFORMS)
 
 # 小红书默认话题标签
 XHS_DEFAULT_TAGS = ["具身智能", "VLA"]
+XHS_CONTENT_LIMIT = 300
+BILIBILI_DESC_LIMIT = 250
+XHS_SUMMARY_LIMIT = 90
+BILIBILI_SUMMARY_LIMIT = 60
+
+
+def upload_bilibili(*args, **kwargs):
+    if _upload_bilibili_impl is None:
+        raise RuntimeError("B站上传依赖未安装") from _BILIBILI_IMPORT_ERROR
+    return _upload_bilibili_impl(*args, **kwargs)
+
+
+def upload_xiaohongshu_note(*args, **kwargs):
+    if _upload_xiaohongshu_note_impl is None:
+        raise RuntimeError("小红书上传依赖未安装") from _XHS_IMPORT_ERROR
+    return _upload_xiaohongshu_note_impl(*args, **kwargs)
+
+
+def upload_xiaohongshu_video(*args, **kwargs):
+    if _upload_xiaohongshu_video_impl is None:
+        raise RuntimeError("小红书上传依赖未安装") from _XHS_IMPORT_ERROR
+    return _upload_xiaohongshu_video_impl(*args, **kwargs)
 
 
 def parse_platforms(raw_platforms: Optional[str]) -> List[str]:
@@ -46,30 +80,101 @@ def _build_xhs_title(video_title: str, cn_titles: Optional[List[str]]) -> str:
     return "Arxiv论文速览"
 
 
+def _clean_text(value: Optional[str]) -> str:
+    return (value or "").strip()
+
+
+def _truncate_text(value: str, max_len: int) -> str:
+    text = _clean_text(value)
+    if max_len <= 0:
+        return ""
+    if len(text) <= max_len:
+        return text
+    if max_len == 1:
+        return text[:1]
+    return text[: max_len - 1].rstrip() + "…"
+
+
+def _append_line_with_limit(lines: List[str], line: str, total_limit: int) -> bool:
+    if not line:
+        return True
+    candidate = "\n".join(lines + [line]).strip()
+    if len(candidate) <= total_limit:
+        lines.append(line)
+        return True
+    return False
+
+
+def _build_compact_description(
+    *,
+    video_desc: str,
+    cn_titles: Optional[List[str]],
+    origin_titles: Optional[List[str]],
+    paper_links: Optional[List[str]],
+    project_links: Optional[List[str]],
+    summaries: Optional[List[str]],
+    total_limit: int,
+    summary_limit: int,
+    include_cn_titles: bool = False,
+) -> str:
+    lines: List[str] = []
+    num_papers = max(
+        len(cn_titles or []),
+        len(origin_titles or []),
+        len(paper_links or []),
+        len(project_links or []),
+        len(summaries or []),
+    )
+
+    for i in range(num_papers):
+        cn_title = _clean_text(cn_titles[i]) if cn_titles and i < len(cn_titles) else ""
+        title = _clean_text(origin_titles[i]) if origin_titles and i < len(origin_titles) else ""
+        paper_link = _clean_text(paper_links[i]) if paper_links and i < len(paper_links) else ""
+        project_link = _clean_text(project_links[i]) if project_links and i < len(project_links) else ""
+        summary = _clean_text(summaries[i]) if summaries and i < len(summaries) else ""
+
+        for line in (
+            f"中文标题：{cn_title}" if include_cn_titles and cn_title else "",
+            f"论文标题：{title}" if title else "",
+            f"论文链接：{paper_link}" if paper_link else "",
+            f"项目链接：{project_link}" if project_link else "",
+        ):
+            if not _append_line_with_limit(lines, line, total_limit):
+                return "\n".join(lines).strip()
+
+        if summary:
+            existing = "\n".join(lines).strip()
+            remaining = total_limit - len(existing) - (1 if existing else 0) - len("摘要：")
+            summary_text = _truncate_text(summary, min(summary_limit, remaining))
+            if summary_text and not _append_line_with_limit(lines, f"摘要：{summary_text}", total_limit):
+                return "\n".join(lines).strip()
+
+    content = "\n".join(lines).strip()
+    if content:
+        return content
+    return _truncate_text(video_desc, total_limit)
+
+
 def _build_xhs_content(
     video_desc: str,
     cn_titles: Optional[List[str]],
     origin_titles: Optional[List[str]],
     summaries: Optional[List[str]] = None,
+    paper_links: Optional[List[str]] = None,
+    project_links: Optional[List[str]] = None,
 ) -> str:
-    """构建小红书文案：论文原名 + 中文摘要。"""
-    lines = []
-    # 逐篇论文展示：原名 + 中文摘要
-    num_papers = max(len(origin_titles or []), len(cn_titles or []))
-    for i in range(num_papers):
-        # 论文原名（英文标题）
-        if origin_titles and i < len(origin_titles):
-            lines.append(f"📄 {origin_titles[i]}")
-        # 中文标题
-        if cn_titles and i < len(cn_titles):
-            lines.append(f"中文标题：{cn_titles[i]}")
-        # 中文摘要
-        if summaries and i < len(summaries) and summaries[i]:
-            lines.append(f"摘要：{summaries[i][:300]}")
-        if i < num_papers - 1:
-            lines.append("")  # 论文之间空行分隔
-    content = "\n".join(lines).strip()
-    return content[:1000]
+    """构建小红书文案：仅保留论文名，且控制为精简简介。"""
+    return _build_compact_description(
+        video_desc=video_desc,
+        cn_titles=cn_titles,
+        origin_titles=origin_titles,
+        paper_links=paper_links,
+        project_links=project_links,
+        summaries=summaries,
+        total_limit=XHS_CONTENT_LIMIT,
+        summary_limit=XHS_SUMMARY_LIMIT,
+        include_cn_titles=True,
+    )
 
 
 def _build_bilibili_desc(
@@ -77,23 +182,20 @@ def _build_bilibili_desc(
     cn_titles: Optional[List[str]],
     origin_titles: Optional[List[str]],
     summaries: Optional[List[str]] = None,
+    paper_links: Optional[List[str]] = None,
+    project_links: Optional[List[str]] = None,
 ) -> str:
-    """构建B站视频描述：论文原名 + 中文摘要。"""
-    lines = []
-    num_papers = max(len(origin_titles or []), len(cn_titles or []))
-    for i in range(num_papers):
-        if origin_titles and i < len(origin_titles):
-            lines.append(f"论文：{origin_titles[i]}")
-        if summaries and i < len(summaries) and summaries[i]:
-            # B站描述限制较宽，多给一些摘要
-            lines.append(f"摘要：{summaries[i][:500]}")
-        if i < num_papers - 1:
-            lines.append("")
-    if not lines:
-        # 兜底：使用原始 video_desc
-        return video_desc[:2000] if video_desc else ""
-    content = "\n".join(lines).strip()
-    return content[:2000]
+    """构建B站视频简介：仅保留论文名，并压缩为上传限制内。"""
+    return _build_compact_description(
+        video_desc=video_desc,
+        cn_titles=cn_titles,
+        origin_titles=origin_titles,
+        paper_links=paper_links,
+        project_links=project_links,
+        summaries=summaries,
+        total_limit=BILIBILI_DESC_LIMIT,
+        summary_limit=BILIBILI_SUMMARY_LIMIT,
+    )
 
 
 def _collect_xhs_images(cover_path: Optional[str], max_images: int = 8) -> List[str]:
@@ -127,6 +229,8 @@ def upload_generated_content(
     cn_titles: Optional[List[str]] = None,
     origin_titles: Optional[List[str]] = None,
     summaries: Optional[List[str]] = None,
+    paper_links: Optional[List[str]] = None,
+    project_links: Optional[List[str]] = None,
     bilibili_tid: int = 188,
     xhs_tags: Optional[List[str]] = None,
 ) -> Dict[str, Dict[str, object]]:
@@ -146,6 +250,8 @@ def upload_generated_content(
                 cn_titles=cn_titles,
                 origin_titles=origin_titles,
                 summaries=summaries,
+                paper_links=paper_links,
+                project_links=project_links,
             )
             bv_id = upload_bilibili(
                 video_path=video_path,
@@ -170,6 +276,8 @@ def upload_generated_content(
             cn_titles=cn_titles,
             origin_titles=origin_titles,
             summaries=summaries,
+            paper_links=paper_links,
+            project_links=project_links,
         )
         # 合并默认标签和自定义标签（去重保序）
         final_tags = list(XHS_DEFAULT_TAGS)

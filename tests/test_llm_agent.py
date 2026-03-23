@@ -138,3 +138,15 @@ def test_create_chat_completion_mock():
             from src.llm_tools.llm_agent import create_chat_completion
             result = create_chat_completion("测试prompt")
             assert result == "测试回复"
+
+
+def test_generate_video_title_removes_exaggerated_words():
+    """标题生成后应移除“首次/突破”等夸张宣传词。"""
+    with patch("src.llm_tools.llm_agent.create_chat_completion", return_value="首次实现精准操作新突破"):
+        from src.llm_tools.llm_agent import generate_video_title
+
+        result = generate_video_title("论文内容")
+
+    assert "首次" not in result
+    assert "突破" not in result
+    assert result
