@@ -11,6 +11,11 @@ import base64
 import logging
 import json
 from config import DASHSCOPE_API_KEY, FONT_PATH
+try:
+    from src.utils.text_helpers import contains_chinese
+except ImportError:
+    from utils.text_helpers import contains_chinese
+
 import nltk
 try:
     nltk.data.find('tokenizers/punkt_tab')
@@ -352,7 +357,7 @@ class VideoCreator:
         if figure_role and isinstance(figure_role, str) and len(figure_role.strip()) > 0:
             role = figure_role.strip()
             # 如果 figure_role 本身就是中文描述性名称，直接使用
-            if any('\u4e00' <= ch <= '\u9fff' for ch in role):
+            if contains_chinese(role):
                 return role
             # 英文 figure_role 尝试映射
             role_lower = role.lower()
@@ -577,8 +582,8 @@ class VideoCreator:
 
         tts_model = "cosyvoice-v1"
         tts_voice = "longxiaochun"
-        TTS_MAX_WORKERS = max(1, int(os.getenv("TTS_MAX_WORKERS", "6")))
-        TTS_SERIAL_RETRY_ATTEMPTS = max(0, int(os.getenv("TTS_SERIAL_RETRY_ATTEMPTS", "1")))
+        TTS_MAX_WORKERS = max(1, int(os.getenv("TTS_MAX_WORKERS", "2")))
+        TTS_SERIAL_RETRY_ATTEMPTS = max(0, int(os.getenv("TTS_SERIAL_RETRY_ATTEMPTS", "3")))
 
         def _tts_single(text, audio_file, tag):
             try:
@@ -656,7 +661,9 @@ class VideoCreator:
                 if not failed_tasks:
                     break
                 remaining_tasks = []
-                for text, audio_file, tag, task_type, idx, sent_idx in failed_tasks:
+                for ti, (text, audio_file, tag, task_type, idx, sent_idx) in enumerate(failed_tasks):
+                    if ti > 0:
+                        _time.sleep(2)  # 串行重试间隔2秒，避免限流
                     result = _tts_single(text, audio_file, tag)
                     if result:
                         tts_results[(task_type, idx, sent_idx)] = result
@@ -807,6 +814,16 @@ class VideoCreator:
                 section_audio_map[matched_section].append(audio_item)
             else:
                 unmatched_audio.append(audio_item)
+
+        # 步骤2.5：如果没有 opening/intro 图片，将第一张图强制归入 opening，并从原 section 移除
+        has_opening = "opening" in section_images or "intro" in section_images
+        if not has_opening and n_images > 0:
+            # 从原 section 中移除 image 0，避免后续覆盖
+            for sec, img_list in section_images.items():
+                if 0 in img_list:
+                    img_list.remove(0)
+            section_images.setdefault("opening", []).insert(0, 0)
+            logging.info("无 opening/intro 图片，将第一张图强制归入 opening section")
 
         # 步骤3：将每个 section 的音频均匀分配到该 section 的图片
         section_order = ["opening", "intro", "method", "results"]
@@ -1004,15 +1021,18 @@ class VideoCreator:
             expl_sentences = expl_sentence_files[i] if i < len(expl_sentence_files) else []
             image_duration = 0.0
 
-            for (path, text, duration) in expl_sentences:
-                subtitle_entries.append({'text': text, 'start': cumulative_time, 'duration': duration})
-                cumulative_time += duration
-                image_duration += duration
+            # 第一张图：先播 groups（含 opening 开场白），再播 expl（图片解释）
+            # 其他图：先播 expl，再播 groups（保持原逻辑）
+            if i == 0:
+                first_order = [("group", groups[i]), ("expl", expl_sentences)]
+            else:
+                first_order = [("expl", expl_sentences), ("group", groups[i])]
 
-            for (path, txt, duration) in groups[i]:
-                subtitle_entries.append({'text': txt, 'start': cumulative_time, 'duration': duration})
-                cumulative_time += duration
-                image_duration += duration
+            for _, sentence_list in first_order:
+                for (path, txt, duration) in sentence_list:
+                    subtitle_entries.append({'text': txt, 'start': cumulative_time, 'duration': duration})
+                    cumulative_time += duration
+                    image_duration += duration
 
             if image_duration <= 0:
                 image_duration = 0.5
@@ -1065,33 +1085,27 @@ class VideoCreator:
 
             for i in range(len(self.images)):
                 expl_sentences = expl_sentence_files[i] if i < len(expl_sentence_files) else []
-                for (path, text, duration) in expl_sentences:
-                    aclip = safe_audio_clip_loader(path)
-                    if aclip:
-                        try:
-                            all_audio_arrays.append((aclip.to_soundarray(fps=44100), 44100))
-                            temp_audio_manager.add_clip(aclip)
-                        except Exception as e:
-                            audio_logger.warning(f"处理解释音频失败: {e}")
-                        finally:
-                            try:
-                                aclip.close()
-                            except Exception:
-                                pass
 
-                for (path, txt, duration) in groups[i]:
-                    aclip = safe_audio_clip_loader(path)
-                    if aclip:
-                        try:
-                            all_audio_arrays.append((aclip.to_soundarray(fps=44100), 44100))
-                            temp_audio_manager.add_clip(aclip)
-                        except Exception as e:
-                            audio_logger.warning(f"处理摘要音频失败: {e}")
-                        finally:
+                # 第一张图：先播 groups（opening），再播 expl；其他图正常顺序
+                if i == 0:
+                    audio_order = [("group", groups[i]), ("expl", expl_sentences)]
+                else:
+                    audio_order = [("expl", expl_sentences), ("group", groups[i])]
+
+                for _, sentence_list in audio_order:
+                    for (path, txt, duration) in sentence_list:
+                        aclip = safe_audio_clip_loader(path)
+                        if aclip:
                             try:
-                                aclip.close()
-                            except Exception:
-                                pass
+                                all_audio_arrays.append((aclip.to_soundarray(fps=44100), 44100))
+                                temp_audio_manager.add_clip(aclip)
+                            except Exception as e:
+                                audio_logger.warning(f"处理音频失败: {e}")
+                            finally:
+                                try:
+                                    aclip.close()
+                                except Exception:
+                                    pass
 
         if not all_audio_arrays:
             raise RuntimeError("没有有效音频")

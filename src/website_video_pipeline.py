@@ -3,6 +3,8 @@ import logging
 import mimetypes
 import os
 import re
+
+from src.utils.text_helpers import contains_chinese as _contains_chinese_impl
 from pathlib import Path
 from typing import Dict, List, Optional
 from urllib.parse import urljoin, urlparse
@@ -92,7 +94,7 @@ def _sanitize_filename(name: str) -> str:
 
 
 def _contains_chinese(text: str) -> bool:
-    return bool(re.search(r"[\u4e00-\u9fff]", text or ""))
+    return _contains_chinese_impl(text)
 
 
 def _decode_next_payload(raw_html: str) -> str:

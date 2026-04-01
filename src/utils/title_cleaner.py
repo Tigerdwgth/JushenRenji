@@ -19,7 +19,7 @@ EXAGGERATED_TITLE_PHRASES = (
 
 
 def _normalize_title(text: str) -> str:
-    normalized = re.sub(r"[：:|]+", " ", text or "")
+    normalized = re.sub(r"[：|]+", " ", text or "")  # 保留英文冒号:用于分隔英文名和中文描述
     normalized = re.sub(r"\s+", " ", normalized)
     return normalized.strip(" ，。！？、;；-_")
 

@@ -46,6 +46,7 @@ except Exception:
     dashscope = None
 
 from src.llm_tools import llm_agent as _llm_agent
+from src.llm_tools.llm_agent import _parse_json_response
 from src.config import DASHSCOPE_API_KEY
 from src.llm_tools.prompts import prompts_dict, get_language_suffix
 
@@ -71,6 +72,7 @@ def _image_to_base64(image: Any) -> str:
 
 
 def _extract_json_from_text(text: str) -> Optional[Dict]:
+    """Extract JSON from LLM text. Delegates to the canonical _parse_json_response."""
     # 清理LLM返回的内容，移除markdown代码块标记
     cleaned_text = text.strip()
     if cleaned_text.startswith("```json"):
@@ -79,18 +81,8 @@ def _extract_json_from_text(text: str) -> Optional[Dict]:
         cleaned_text = cleaned_text[:-3]
     cleaned_text = cleaned_text.strip()
 
-    # try to find JSON object in text
-    try:
-        m = re.search(r"\{.*\}", cleaned_text, re.DOTALL)
-        if m:
-            return json.loads(m.group())
-    except Exception:
-        logger.debug("Failed to parse JSON from model text")
-    # try direct parse
-    try:
-        return json.loads(cleaned_text)
-    except Exception:
-        return None
+    result = _parse_json_response(cleaned_text)
+    return result or None
 
 
 class ImageAgent:

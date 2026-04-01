@@ -100,9 +100,56 @@ src/
 | DeepSeek/Qwen | LLM 生成摘要/标题 | `llm_api_key` |
 | Bilibili | 视频上传 | `bilibili_cookies_file` |
 | tesseract-ocr | OCR 备选方案 | `tessdata_prefix` |
+| Gemini | 封面图片生成（通过 Tailscale la exit node） | `gemini_api_key` |
 
 ## 重要说明
 
 - **没有自动化测试** - 修改后用 `python src/main.py --filename "/path/to/sample.pdf"` 本地验证
 - `config.yaml` 中的 API 密钥应移至环境变量（共享仓库时）
 - `src/prompts.py` 和 `src/llm_tools/prompts.py` 同时存在（遗留 vs 新位置）
+
+
+
+## 封面生成（Gemini + Tailscale Exit Node）
+
+封面使用 **Gemini 图片生成 API** 生成可爱漫画风封面，标题直接由 AI 在画面中渲染。
+
+### 访问 Google API 的网络方案
+
+服务器在国内无法直连 Google API。解决方案是通过 Tailscale exit node `la`（美国，100.103.134.38）转发流量：
+
+- `generate_cover.py` 会自动在调用 Gemini 前开启 exit node，调用完毕后关闭
+- jdh 用户已配置 `sudo tailscale` 免密码（`/etc/sudoers.d/jdh-tailscale`）
+- 如果 la 不可用，自动回退到 DashScope qwen-image
+
+### 配置
+
+`config.yaml` 中需要配置（该文件已在 .gitignore 中，不会推送）：
+```yaml
+gemini_api_key: <your_google_api_key>
+```
+
+`config.py` 中读取为 `GEMINI_API_KEY`。
+
+### 封面生成优先级
+
+1. **Gemini**（gemini-2.5-flash-image）— 通过 Tailscale la exit node 访问
+2. **DashScope**（qwen-image）— 回退方案
+3. **原始图片** — 最终兜底
+
+### 手动测试
+
+```bash
+cd ~/Projects/VlogCutter/JushenRenji/src
+python3 generate_cover.py
+# 输出到 ./output/cover_test.png
+```
+## 网络代理注意事项
+
+运行本项目时**必须先取消代理设置**，否则 arXiv 等外部网站连接会被重置：
+
+```bash
+unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY
+```
+
+服务器可以直接访问 arXiv，设置代理反而会导致 `ConnectionResetError`。

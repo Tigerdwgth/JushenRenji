@@ -20,6 +20,7 @@ _config = load_config()
 # API Keys - 环境变量优先，YAML 兜底
 LLM_API_KEY = os.getenv("LLM_API_KEY") or _config.get("llm_api_key")
 DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY") or _config.get("dashscope_api_key")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or _config.get("gemini_api_key")
 
 # Directory and File Paths - 全大写全局变量
 CACHE_DIR = _config.get("cache_dir", "./cache")

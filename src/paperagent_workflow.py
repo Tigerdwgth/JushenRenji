@@ -537,16 +537,38 @@ def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().str
         # word_budget 可能在 try 块外未定义（图像解释失败时），兜底计算
         if 'word_budget' not in dir():
             word_budget = compute_word_budget(per_paper_duration, num_images=len(images))
-        demo_website, origin_title, short_summary, cn_title = call_llm_multithread(
-            [
-                (get_paper_demo_website, text[:1000]),
-                (generate_origin_title, text[:200]),
-                (lambda t: generate_short_summary(t, word_budget=word_budget['summary']), f"{text[:5000]} {paper.comments}")
-                    if long_or_short == "short"
-                    else (lambda t: generate_summary(t, word_budget=word_budget['summary']), paper.comments + text),
-                (generate_video_title, text[:200]),
-            ]
-        )
+        structured_plan_part = {}
+        if long_or_short == "short":
+            demo_website, origin_title, short_summary, cn_title = call_llm_multithread(
+                [
+                    (get_paper_demo_website, text[:1000]),
+                    (generate_origin_title, text[:200]),
+                    (lambda t: generate_short_summary(t, word_budget=word_budget['summary']), f"{text[:5000]} {paper.comments}"),
+                    (generate_video_title, text[:200]),
+                ]
+            )
+        else:
+            # long 模式：使用结构化脚本，保证 opening/intro/method/results 语义分组
+            demo_website, origin_title, cn_title, structured_plan_part = call_llm_multithread(
+                [
+                    (get_paper_demo_website, text[:1000]),
+                    (generate_origin_title, text[:200]),
+                    (generate_video_title, text[:200]),
+                    (lambda t: generate_structured_video_plan(t, word_budget=word_budget['summary']), text),
+                ]
+            )
+            logging.info("生成结构化视频脚本（long 模式）")
+            try:
+                pass  # structured_plan_part already computed above in parallel
+                if structured_plan_part:
+                    short_summary = structured_plan_to_text(structured_plan_part)
+                    logging.info("结构化脚本生成成功，使用5段式叙事")
+                else:
+                    raise ValueError("结构化脚本为空")
+            except Exception as e:
+                logging.warning(f"结构化脚本生成失败，回退为普通摘要: {e}")
+                structured_plan_part = {}
+                short_summary = generate_summary(paper.comments + text, word_budget=word_budget['summary'])
         
         if not short_summary:
             logging.warning(f"摘要生成失败，跳过论文: {paper.title}")
@@ -556,7 +578,7 @@ def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().str
         # 多篇论文时封面在循环外、合并视频后统一生成，避免每次迭代覆盖同一文件
         if len(papers) == 1:
             try:
-                generate_cover('./pic/1.png', cn_title, output_filename.replace(".mp4", ".png"))
+                generate_cover('./pic/1.png', cn_title, output_filename.replace(".mp4", ".png"), paper_abstract=paper_abstract)
             except Exception as e:
                 logging.warning("单篇论文封面生成失败，跳过封面: %s", e)
         # 限制图片数量为前两张
@@ -574,7 +596,7 @@ def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().str
                     image_explanations_part = json.load(f)
         except Exception:
             image_explanations_part = None
-        video_creator = VideoCreator(images, short_summary, video_clips=get_videoclips(text, demo_website), image_explanations=image_explanations_part, target_duration=per_paper_duration)
+        video_creator = VideoCreator(images, short_summary, video_clips=get_videoclips(text, demo_website), image_explanations=image_explanations_part, target_duration=per_paper_duration, structured_plan=structured_plan_part)
         part_save_path = f"./output/part_{paper_idx + 1}.mp4"
         part_video_path = video_creator.create_video(part_save_path)
         if not part_video_path or not os.path.exists(part_video_path):

@@ -12,6 +12,7 @@ from src.config import (
 )
 from src.llm_tools.prompts import prompts_dict
 from src.utils.title_cleaner import sanitize_generated_title
+from src.utils.text_helpers import first_chinese_index
 
 # 配置日志记录
 logging.basicConfig(
@@ -115,9 +116,13 @@ def generate_short_summary(text, word_budget: int = 120):
 def generate_video_title(text):
     prompt = get_prompt(inspect.currentframe().f_code.co_name)
     ret_str = create_chat_completion(prompt, text)
-    #使用正则表达式过滤掉不能出现在路径的字符
-    ret_str = re.sub(r'[\\/:*?"<>|]', '', ret_str)
-    return sanitize_generated_title(ret_str)
+    ret_str = sanitize_generated_title(ret_str)
+    # 确保英文论文名后有冒号分隔：找到第一个中文字符位置，在其前插入": "
+    if ret_str and ':' not in ret_str and '：' not in ret_str:
+        idx = first_chinese_index(ret_str)
+        if idx > 0:
+            ret_str = ret_str[:idx].rstrip() + ': ' + ret_str[idx:]
+    return ret_str
 
 def generate_origin_title(text):
     prompt = get_prompt(inspect.currentframe().f_code.co_name)
@@ -168,23 +173,13 @@ def structured_plan_to_text(plan: dict) -> str:
 def get_paper_demo_website(text):
     prompt = get_prompt(inspect.currentframe().f_code.co_name)
     ret = create_chat_completion(prompt, text)
-    
+
     logging.info(f"{ret}")
-    # 使用正则表达式提取 JSON 部分
-    json_re = re.compile(r"\{.*?\}", re.DOTALL)  # 非贪婪匹配，支持换行符
-    match = json_re.search(ret)
-    if match:
-        json_str = match.group()  # 提取匹配到的 JSON 字符串
-        try:
-            # 尝试解析 JSON
-            parsed_json = json.loads(json_str)
-            logging.info("解析成功: %s", parsed_json)
-        except json.JSONDecodeError as e:
-            logging.error("JSON 解析失败: %s", e)
-            return ''
-    else:
+    parsed_json = _parse_json_response(ret)
+    if not parsed_json:
         logging.warning("未找到 JSON 内容")
         return ''
+    logging.info("解析成功: %s", parsed_json)
     # 安全访问 key，防止 KeyError
     state = parsed_json.get('state')
     if state not in ['0', '1', 0, 1]:
