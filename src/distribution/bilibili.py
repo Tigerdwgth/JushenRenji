@@ -163,6 +163,11 @@ def _login_with_cookies(bili: BiliBili, cookies_dict: dict) -> bool:
             bili._BiliBili__session.cookies, cookies_dict
         )
         bili._BiliBili__bili_jct = cookies_dict.get("bili_jct", "")
+        # 注入 User-Agent 防止 B站 412 风控
+        bili._BiliBili__session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            "Referer": "https://www.bilibili.com",
+        })
         nav_resp = bili._BiliBili__session.get(
             "https://api.bilibili.com/x/web-interface/nav",
             timeout=5,

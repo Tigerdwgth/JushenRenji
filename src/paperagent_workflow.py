@@ -261,6 +261,16 @@ def run_pdf_to_video_pipeline(paper=None,pdf_file_path=None,demowebsite=None,en_
             summary = structured_plan_to_text(structured_plan)
             title = generate_video_title(text[:1000])
             logging.info("结构化脚本生成成功，使用5段式叙事")
+            # 缓存 structured_plan 和 paper_text 供 Manim 模式使用
+            try:
+                import json as _json
+                with open("./cache/structured_plan.json", "w", encoding="utf-8") as _f:
+                    _json.dump(structured_plan, _f, ensure_ascii=False, indent=2)
+                with open("./cache/paper_text.txt", "w", encoding="utf-8") as _f:
+                    _f.write(text)
+                logging.info("已缓存 structured_plan 和 paper_text")
+            except Exception as _e:
+                logging.warning("缓存 structured_plan 失败: %s", _e)
         else:
             raise ValueError("结构化脚本为空")
     except Exception as e:

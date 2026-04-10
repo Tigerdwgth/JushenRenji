@@ -1,10 +1,12 @@
 import os
+import json
 import datetime
 import logging
 import argparse
 
 from paperagent_workflow import generate_daily_arxiv_summary
 from src.distribution.orchestrator import parse_platforms, upload_generated_content
+from src.manim_engine import ManimEngine
 
 logging.basicConfig(
     level=logging.DEBUG,  # 修改为 DEBUG 级别
@@ -52,6 +54,34 @@ def parse_args():
         help="Target video duration in seconds (default: 300 = 5min)"
     )
 
+    # Manim 演示生成参数
+    parser.add_argument(
+        "--manim",
+        action="store_true",
+        default=False,
+        help="Generate Manim animation presentation instead of Ken Burns video"
+    )
+    parser.add_argument(
+        "--manim-tts",
+        action="store_true",
+        default=False,
+        help="Add TTS narration to Manim presentation"
+    )
+    parser.add_argument(
+        "--manim-fmt",
+        type=str,
+        default="mp4",
+        choices=["mp4", "gif"],
+        help="Manim output format (default: mp4)"
+    )
+    parser.add_argument(
+        "--manim-quality",
+        type=str,
+        default="medium",
+        choices=["low", "medium", "high"],
+        help="Manim render quality: low(480p), medium(720p), high(1080p)"
+    )
+
     return parser.parse_args()
 
 
@@ -63,6 +93,11 @@ if __name__ == "__main__":
     video_length = args.video_length
     platforms = parse_platforms(args.platforms)
     target_duration = args.target_duration
+
+    manim_mode = getattr(args, "manim", False)
+    manim_tts = getattr(args, "manim_tts", False)
+    manim_fmt = getattr(args, "manim_fmt", "mp4")
+    manim_quality = getattr(args, "manim_quality", "medium")
 
     try:
         if not filename:
@@ -93,6 +128,55 @@ if __name__ == "__main__":
         if not path or not os.path.exists(path):
             raise RuntimeError(f"视频生成失败，输出文件不存在: {path}")
         logging.info("本地视频生成完成: %s", path)
+
+        # ---- Manim 演示模式 ----
+        if manim_mode:
+            logging.info("进入 Manim 演示生成模式")
+            from paperagent_workflow import PDFProcessor
+            from src.llm_tools.llm_agent import generate_structured_video_plan
+
+            # 复用已有的 structured_plan 数据（如果 generate_daily_arxiv_summary 生成了的话）
+            # 这里需要重新获取论文文本和 structured_plan
+            # 尝试从 cache 中读取
+            paper_text = ""
+            structured_plan = {}
+            cache_plan_path = "./cache/structured_plan.json"
+            if os.path.exists(cache_plan_path):
+                with open(cache_plan_path, "r", encoding="utf-8") as f:
+                    structured_plan = json.load(f)
+            cache_text_path = "./cache/paper_text.txt"
+            if os.path.exists(cache_text_path):
+                with open(cache_text_path, "r", encoding="utf-8") as f:
+                    paper_text = f.read()
+
+            if not structured_plan:
+                logging.warning("未找到缓存的 structured_plan，将从论文重新生成")
+                # 尝试从最近的 PDF 中重新提取
+                import glob as _glob
+                cached_pdf = "./cache/cached_pdf.pdf"
+                if os.path.exists(cached_pdf):
+                    proc = PDFProcessor(cached_pdf)
+                    paper_text = proc.extract_text()
+                    structured_plan = generate_structured_video_plan(paper_text)
+
+            if structured_plan and paper_text:
+                engine = ManimEngine(
+                    paper_text=paper_text,
+                    structured_plan=structured_plan,
+                    output_dir="./output/manim",
+                )
+                manim_path = engine.run(
+                    tts=manim_tts,
+                    quality=manim_quality,
+                    fmt=manim_fmt,
+                )
+                if manim_path:
+                    logging.info("Manim 演示视频已生成: %s", manim_path)
+                    print(f"Manim output: {manim_path}")
+                else:
+                    logging.error("Manim 演示视频生成失败")
+            else:
+                logging.error("无法获取论文数据，Manim 生成跳过")
         logging.info("英文标题列表: %s", titles)
         logging.info("中文标题列表: %s", cn_titles)
         print(path)

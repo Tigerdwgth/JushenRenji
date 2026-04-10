@@ -143,3 +143,135 @@ def add_language_suffix_to_prompts():
 
 # 初始化提示词语言后缀
 add_language_suffix_to_prompts()
+
+
+# ---- Manim 动画生成相关 Prompts ----
+
+_MANIM_LAYOUT_RULES = (
+    "\n\n【布局铁律 — 必须严格遵守】:\n"
+    "1. Manim 默认画框：X 轴 [-7, 7]，Y 轴 [-4, 4]。所有元素必须在此范围内。\n"
+    "2. 同一时刻屏幕上最多 5 个主要元素。超过时必须先 FadeOut 旧元素再展示新元素。\n"
+    "3. 使用 .scale_to_fit_width() 或 .scale_to_fit_height() 确保元素不超框。\n"
+    "4. 标题 font_size=28，正文 font_size=18-20，注释 font_size=14-16。公式 .scale(0.7-0.8)。禁止 scale_to_fit_width 超过 10。\n"
+    "5. 元素间距至少 0.5 单位，用 buff=0.3 以上。\n"
+    "6. 分步展示：每展示一组新内容前，FadeOut 上一组（标题可保留）。\n"
+    "7. 禁止一次性展示超过 3 行公式/文字，必须分步骤。\n"
+    "8. 中文文字不要指定 font 参数，让 Manim 使用系统默认字体。\n"
+    "9. 整体动画时长控制在 15-25 秒。\n"
+    "10. 【LaTeX 铁律】MathTex 禁止使用 substrings_to_isolate 参数，它会破坏括号匹配。\n"
+    "11. 【LaTeX 铁律】禁止使用 set_color_by_tex()。如需高亮，用多个 MathTex 拼接或用 SurroundingRectangle。\n"
+    "12. 【LaTeX 铁律】禁止使用 TransformMatchingTex。用 FadeOut + FadeIn 替代。\n"
+    "13. 【LaTeX 铁律】\\left 和 \\right 必须成对出现，不能被拆分到不同的 MathTex 参数中。\n"
+    "14. 【LaTeX 铁律】公式尽量写在一个完整字符串中，不要拆分成多个参数。\n"
+)
+
+prompts_dict["manim_analyze_script"] = (
+    "你是一名学术动画专家。给定一篇论文的视频脚本（JSON 格式，含 opening/intro/method/results 段落）和论文原文，"
+    "请分析脚本中哪些内容适合用 Manim 动画展示。\n"
+    "需要识别以下类型：\n"
+    "1. formula — 数学公式、损失函数、注意力机制等（从原文中提取对应的 LaTeX）\n"
+    "2. architecture — 模型结构、网络层级（从原文中提取结构描述）\n"
+    "3. flow — 算法步骤、数据流、pipeline\n"
+    "4. title — 论文标题和关键结论\n"
+    "5. results — 实验结果、性能数据、对比表格（必须包含，从原文 Results/Experiments 部分提取具体数字）\n\n"
+    "返回严格 JSON 数组，每个元素格式：\n"
+    '{"section": "method", "type": "formula", "script_excerpt": "脚本中对应的原文片段", '
+    '"latex": "LaTeX公式（仅formula类型需要）", "description": "内容描述（要具体到论文的方法名称和细节，不要泛泛而谈）", "scene_name": "唯一的英文类名"}\n\n'
+    "要求：\n"
+    "- 至少提取 2 个场景，最多 5 个\n"
+    "- formula 类型必须包含从原文提取的准确 LaTeX 公式\n"
+    "- description 必须具体提到论文的方法名称、模块名称、独特之处，禁止使用通用描述\n"
+    "- scene_name 必须是合法的 Python 类名\n"
+    "- title 类型必须放在第一个位置（作为开场），results 类型必须放在最后一个位置（展示实验数据）\n"
+    "- 必须包含至少一个 results 类型场景，展示论文的关键实验数据（如成功率、性能对比等）\n"
+    "- 仅输出 JSON 数组，不要其他内容\n"
+)
+
+prompts_dict["manim_generate_formula"] = (
+    "你是 ManimCE (Manim Community Edition) 专家。请生成一个展示数学公式推导的 Manim Scene。\n\n"
+    "代码要求：\n"
+    "1. 使用 `from manim import *`\n"
+    "2. 类名使用提供的 scene_name\n"
+    "3. 动画流程（分步展示，每步之间先清理上一步）：\n"
+    "   - 第1步：显示公式标题（Text, font_size=28），停留1秒\n"
+    "   - 第2步：FadeOut 标题，用 Write 展示主公式（MathTex, scale=0.9），停留2秒\n"
+    "   - 第3步：用 Indicate 高亮公式中的关键变量，添加1-2个简短注释（Text, font_size=22），停留1.5秒\n"
+    "   - 第4步：FadeOut 注释，如有推导步骤用 TransformMatchingTex 变换公式，停留2秒\n"
+    "   - 第5步：FadeOut 所有元素\n"
+    "4. 公式居中放置，注释放在公式下方\n"
+    "5. 总共不超过 6 个 play() 调用\n"
+    + _MANIM_LAYOUT_RULES +
+    "仅输出完整的 Python 代码，不要 markdown 代码块标记，不要解释文字。\n"
+)
+
+prompts_dict["manim_generate_architecture"] = (
+    "你是 ManimCE (Manim Community Edition) 专家。请生成一个展示模型架构的 Manim Scene。\n\n"
+    "代码要求：\n"
+    "1. 使用 `from manim import *`\n"
+    "2. 类名使用提供的 scene_name\n"
+    "3. 架构图设计：\n"
+    "   - 每个模块用 Rectangle(width=2.5, height=0.8) + Text(font_size=20)\n"
+    "   - 最多 4-5 个模块，从上到下或从左到右排列\n"
+    "   - 用 Arrow(stroke_width=2, buff=0.15) 连接\n"
+    "   - 不同模块用不同颜色（BLUE, GREEN, YELLOW, RED, PURPLE）\n"
+    "4. 动画流程：\n"
+    "   - 先显示标题，然后逐个 FadeIn 模块 + GrowArrow 连接\n"
+    "   - 最后 Indicate 高亮核心模块\n"
+    "   - 总共不超过 10 个 play() 调用\n"
+    "5. 所有模块位置必须手动计算，确保不重叠、不超框\n"
+    + _MANIM_LAYOUT_RULES +
+    "仅输出完整的 Python 代码，不要 markdown 代码块标记，不要解释文字。\n"
+)
+
+prompts_dict["manim_generate_flow"] = (
+    "你是 ManimCE (Manim Community Edition) 专家。请生成一个展示算法流程的 Manim Scene。\n\n"
+    "代码要求：\n"
+    "1. 使用 `from manim import *`\n"
+    "2. 类名使用提供的 scene_name\n"
+    "3. 流程图设计：\n"
+    "   - 最多 5 个步骤节点，用 RoundedRectangle(width=2.5, height=0.7, corner_radius=0.15) + Text(font_size=18)\n"
+    "   - 从左到右排列，或分两行排列（上行3个，下行2个）\n"
+    "   - 用 Arrow(stroke_width=2, buff=0.15) 连接\n"
+    "4. 动画流程：\n"
+    "   - 显示标题，然后逐步 Create 节点 + GrowArrow\n"
+    "   - 可选：用 Dot 沿路径移动表示数据流\n"
+    "   - 总共不超过 10 个 play() 调用\n"
+    "5. 整体布局用 VGroup 管理，用 .arrange() 或手动定位，确保不超框\n"
+    + _MANIM_LAYOUT_RULES +
+    "仅输出完整的 Python 代码，不要 markdown 代码块标记，不要解释文字。\n"
+)
+
+prompts_dict["manim_generate_title"] = (
+    "你是 ManimCE (Manim Community Edition) 专家。请生成一个展示论文标题和核心贡献的 Manim Scene。\n\n"
+    "代码要求：\n"
+    "1. 使用 `from manim import *`\n"
+    "2. 类名使用提供的 scene_name\n"
+    "3. 展示内容：\n"
+    "   - 论文标题（Text, font_size=32, color=BLUE），居中显示\n"
+    "   - 1-3 个核心贡献点（Text, font_size=22），逐条出现在标题下方\n"
+    "4. 动画流程：\n"
+    "   - Write 标题 → Wait(1) → 逐条 FadeIn 贡献点 → Wait(2) → FadeOut 全部\n"
+    "   - 总共不超过 8 个 play() 调用\n"
+    "5. 所有文字居中排列，用 VGroup + arrange(DOWN, buff=0.5)\n"
+    + _MANIM_LAYOUT_RULES +
+    "仅输出完整的 Python 代码，不要 markdown 代码块标记，不要解释文字。\n"
+)
+
+prompts_dict["manim_generate_results"] = (
+    "你是 ManimCE (Manim Community Edition) 专家。请生成一个展示论文实验结果的 Manim Scene。\n\n"
+    "代码要求：\n"
+    "1. 使用 `from manim import *`\n"
+    "2. 类名使用提供的 scene_name\n"
+    "3. 展示方式（用 Text 列表，禁止用 Rectangle 柱状图）：\n"
+    "   - 标题 Text(font_size=28) 居中置顶\n"
+    "   - 每条结果用 Text(font_size=22)，格式：任务名 ... 数值 (提升)\n"
+    "   - 数值用 GREEN 高亮，提升百分比用 YELLOW\n"
+    "   - 最后一行用 BOLD 显示平均值/总结\n"
+    "   - 最多展示 6 条数据，超过的合并为平均值\n"
+    "4. 动画：标题 Write → 逐条 FadeIn 数据 → 高亮平均值\n"
+    "5. 最后保持内容在屏幕上，不要 FadeOut\n"
+    "6. 数据必须从论文原文中提取真实数字，禁止编造\n"
+    "7. 所有元素必须在 X[-7,7] Y[-4,4] 范围内，用 scale_to_fit_width(13) 确保不超框\n"
+    + _MANIM_LAYOUT_RULES +
+    "仅输出完整的 Python 代码，不要 markdown 代码块标记，不要解释文字。\n"
+)
