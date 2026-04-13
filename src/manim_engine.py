@@ -32,6 +32,14 @@ QUALITY_MAP = {
     "high": "-qh",      # 1080p
 }
 
+# 布局常量
+TEXT_WRAP_THRESHOLD = 25      # 文本超过此字符数自动换行
+MAX_FRAME_WIDTH = 12          # 画框最大宽度（安全区域）
+MAX_FRAME_HEIGHT = 7          # 画框最大高度
+SAFE_FRAME_WIDTH = 11         # 缩放目标宽度
+SAFE_FRAME_HEIGHT = 6.5       # 缩放目标高度
+
+
 
 def _load_manim_references():
     """加载 manim_skill 参考示例作为 few-shot 上下文。"""
@@ -123,52 +131,90 @@ class ManimEngine:
         self.temp_dir = os.path.join(output_dir, "temp")
         os.makedirs(self.output_dir, exist_ok=True)
         os.makedirs(self.temp_dir, exist_ok=True)
+        self._config_cache = None
 
     # ------------------------------------------------------------------
     # 代码安全: 注入边界检查
     # ------------------------------------------------------------------
 
-    def inject_bounds_check(self, code):
-        """注入自动缩放安全网，并移除末尾 FadeOut 防止黑屏。"""
-        # 1. 移除末尾的 FadeOut（防止最后一帧变黑）
+    def _wrap_long_texts(self, code):
+        """自动给长 Text 字符串插入换行，支持 CJK 字符。"""
+        def _has_cjk(text):
+            return any('\u4e00' <= c <= '\u9fff' for c in text)
+
+        def _wrap_long_text(match):
+            full = match.group(0)
+            text_match = re.search(r'Text\(\s*["\'](.*?)["\']', full, re.DOTALL)
+            if not text_match:
+                return full
+            text = text_match.group(1)
+            if "\\n" in text or "\n" in text or len(text) <= TEXT_WRAP_THRESHOLD:
+                return full
+            threshold = TEXT_WRAP_THRESHOLD
+            if _has_cjk(text):
+                lines = [text[i:i+threshold] for i in range(0, len(text), threshold)]
+            else:
+                words = text.split(" ")
+                lines = []
+                current = ""
+                for w in words:
+                    if current and len(current) + 1 + len(w) > threshold:
+                        lines.append(current)
+                        current = w
+                    else:
+                        current = (current + " " + w).strip()
+                if current:
+                    lines.append(current)
+            new_text = "\\n".join(lines)
+            return full.replace(text, new_text)
+
+        pattern = r'Text\(\s*["\'][^"\']{' + str(TEXT_WRAP_THRESHOLD) + r',}["\'][^)]*\)'
+        code = re.sub(pattern, _wrap_long_text, code)
+        return code
+
+    def _remove_trailing_fadeout(self, code):
+        """移除末尾的 FadeOut，替换为 wait（防止最后一帧变黑）。"""
         lines = code.split('\n')
-        clean_lines = []
-        # 从后往前找最后一个 FadeOut，替换为 wait
-        found_fadeout = False
         for i in range(len(lines) - 1, -1, -1):
-            if not found_fadeout and 'FadeOut' in lines[i] and 'self.play' in lines[i]:
-                # 替换为 self.wait(2)
+            if 'FadeOut' in lines[i] and 'self.play' in lines[i]:
                 indent = len(lines[i]) - len(lines[i].lstrip())
                 lines[i] = ' ' * indent + 'self.wait(2)  # 保持内容显示'
-                found_fadeout = True
-        
-        # 2. 注入缩放安全网
-        safety = """
-        # === Auto-scale safety net ===
-        _all_mobs = VGroup(*[m for m in self.mobjects if isinstance(m, VMobject)])
-        if len(_all_mobs) > 0:
-            if _all_mobs.width > 12:
-                _all_mobs.scale_to_fit_width(11)
-            if _all_mobs.height > 7:
-                _all_mobs.scale_to_fit_height(6.5)
-"""
-        # 找 construct 方法的最后一行，在之前插入
+                break
+        return '\n'.join(lines)
+
+    def _inject_scale_safety(self, code):
+        """注入 VGroup 缩放安全网，防止内容超出画框。"""
+        lines = code.split('\n')
+        safety = [
+            '        # === Auto-scale safety net ===',
+            '        _all_mobs = VGroup(*[m for m in self.mobjects if isinstance(m, VMobject)])',
+            '        if len(_all_mobs) > 0:',
+            '            if _all_mobs.width > ' + str(MAX_FRAME_WIDTH) + ':',
+            '                _all_mobs.scale_to_fit_width(' + str(SAFE_FRAME_WIDTH) + ')',
+            '            if _all_mobs.height > ' + str(MAX_FRAME_HEIGHT) + ':',
+            '                _all_mobs.scale_to_fit_height(' + str(SAFE_FRAME_HEIGHT) + ')',
+        ]
         insert_idx = len(lines) - 1
         for i in range(len(lines) - 1, -1, -1):
             stripped = lines[i].strip()
             if stripped and not stripped.startswith('#'):
                 insert_idx = i
                 break
-        safety_lines = [l for l in safety.strip().split('\n')]
-        lines = lines[:insert_idx] + safety_lines + lines[insert_idx:]
-        
+        lines = lines[:insert_idx] + safety + lines[insert_idx:]
         return '\n'.join(lines)
+
+    def inject_bounds_check(self, code):
+        """注入自动缩放安全网、移除末尾 FadeOut、自动给长文本换行。"""
+        code = self._wrap_long_texts(code)
+        code = self._remove_trailing_fadeout(code)
+        code = self._inject_scale_safety(code)
+        return code
 
 
     def _opencode_generate(self, prompt_text):
         """通过 opencode headless 模式调用 DeepSeek-R1 生成代码。
         opencode 会自动加载 manim_skill 最佳实践。"""
-        import subprocess, os, re as _re
+
 
         # 写 prompt 到临时文件避免 shell 转义问题
         prompt_file = os.path.join(self.temp_dir, "_opencode_prompt.txt")
@@ -194,24 +240,24 @@ class ManimEngine:
                 output = result.stderr or ""
 
             # 1. 去掉 ANSI 转义码
-            output = _re.sub(r'\x1b\[[0-9;]*m', '', output)
-            output = _re.sub(r'\033\[[0-9;]*m', '', output)
+            output = re.sub(r'\x1b\[[0-9;]*m', '', output)
+            output = re.sub(r'\033\[[0-9;]*m', '', output)
             # 真正的 ANSI 字节
-            output = _re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', output)
+            output = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', output)
 
             # 2. 提取 ```python ... ``` 代码块
-            code_match = _re.search(r'```python\s*\n(.*?)\n```', output, _re.DOTALL)
+            code_match = re.search(r'```python\s*\n(.*?)\n```', output, re.DOTALL)
             if code_match:
                 code = code_match.group(1).strip()
                 logger.info("opencode 返回代码 (%d 行)", code.count("\n") + 1)
                 return code
 
             # 3. fallback: 提取 from manim import * 开始的内容
-            manim_match = _re.search(r'(from manim import \*.*)', output, _re.DOTALL)
+            manim_match = re.search(r'(from manim import \*.*)', output, re.DOTALL)
             if manim_match:
                 code = manim_match.group(1).strip()
                 # 去掉尾部的 ``` 标记
-                code = _re.sub(r'\n```\s*$', '', code)
+                code = re.sub(r'\n```\s*$', '', code)
                 logger.info("opencode fallback 提取代码 (%d 行)", code.count("\n") + 1)
                 return code
 
@@ -224,13 +270,20 @@ class ManimEngine:
             logger.error("opencode 调用失败: %s", e)
             return ""
 
+    def _get_config(self):
+        """读取并缓存 config.yaml 配置。"""
+        if self._config_cache is None:
+            config_path = "config.yaml"
+            if os.path.exists(config_path):
+                with open(config_path, "r", encoding="utf-8") as f:
+                    self._config_cache = yaml.safe_load(f) or {}
+            else:
+                self._config_cache = {}
+        return self._config_cache
+
     def _get_deepseek_key(self):
-        config_path = "config.yaml"
-        if os.path.exists(config_path):
-            with open(config_path, "r", encoding="utf-8") as f:
-                config = yaml.safe_load(f) or {}
-            return config.get("llm_api_key", "")
-        return os.environ.get("LLM_API_KEY", "")
+        config = self._get_config()
+        return config.get("llm_api_key", "") or os.environ.get("LLM_API_KEY", "")
 
     # ------------------------------------------------------------------
     # Manim 代码生成
@@ -423,13 +476,10 @@ class ManimEngine:
             import dashscope
             from dashscope.audio.tts_v2 import SpeechSynthesizer
 
-            config_path = "config.yaml"
-            if os.path.exists(config_path):
-                with open(config_path, "r", encoding="utf-8") as f:
-                    config = yaml.safe_load(f) or {}
-                ds_key = config.get("dashscope_api_key", "")
-                if ds_key:
-                    dashscope.api_key = ds_key
+            config = self._get_config()
+            ds_key = config.get("dashscope_api_key", "")
+            if ds_key:
+                dashscope.api_key = ds_key
 
             audio_parts = []
             for i, text in enumerate(narrations):
@@ -565,6 +615,37 @@ class ManimEngine:
     # 主流程: 固定 4 场景结构
     # ------------------------------------------------------------------
 
+
+    def _assign_images_to_scenes(self, pipeline_images, scene_defs, rendered_indices):
+        """为渲染成功的场景分配不重复的 pipeline 图片。"""
+        scene_image_paths = []
+        used_images = set()
+        for i in rendered_indices:
+            sec = scene_defs[i]["section"]
+            # 按优先级找：本 section > method > 任意
+            candidates = (pipeline_images.get(sec, []) +
+                         pipeline_images.get("method", []))
+            img = None
+            for c in candidates:
+                if c not in used_images:
+                    img = c
+                    used_images.add(c)
+                    break
+            # fallback: 任意未用过的图
+            if not img:
+                for imgs in pipeline_images.values():
+                    for c in imgs:
+                        if c not in used_images:
+                            img = c
+                            used_images.add(c)
+                            break
+                    if img:
+                        break
+            scene_image_paths.append(img)
+            logger.info("场景 %s 分配图片: %s", scene_defs[i]["scene_name"],
+                       os.path.basename(img) if img else "None")
+        return scene_image_paths
+
     def run(self, tts=False, quality="medium", fmt="mp4"):
         """完整流程：固定 4 场景 -> 生成代码 -> 渲染 -> 拼接。"""
         logger.info("=== Manim 演示生成开始 ===")
@@ -639,12 +720,9 @@ class ManimEngine:
 
         # 6. Load pipeline images + compose
         pipeline_images = self.load_pipeline_images()
-        scene_image_paths = []
-        for i in rendered_indices:
-            sec = scene_defs[i]["section"]
-            candidates = pipeline_images.get(sec, []) or pipeline_images.get("method", [])
-            img = candidates.pop(0) if candidates else None
-            scene_image_paths.append(img)
+        scene_image_paths = self._assign_images_to_scenes(
+            pipeline_images, scene_defs, rendered_indices
+        )
 
         output = self.compose(
             scene_videos,

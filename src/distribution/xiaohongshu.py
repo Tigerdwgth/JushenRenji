@@ -497,6 +497,48 @@ def login_with_qrcode() -> bool:
 # 上传器
 # ---------------------------------------------------------------------------
 
+
+
+def _prepend_cover_to_video(video_path: str, cover_path: str, duration: float = 1.5) -> str:
+    """将封面图作为首帧插入视频开头，小红书会自动截取第一帧作为封面。"""
+    if not cover_path or not os.path.exists(cover_path):
+        return video_path
+
+    base, ext = video_path.rsplit(".", 1)
+    output_path = base + "_with_cover." + ext
+    try:
+        from moviepy import VideoFileClip, ImageClip, concatenate_videoclips
+        from PIL import Image
+        import numpy as np
+
+        video = VideoFileClip(video_path)
+        w, h = video.size
+
+        # 封面图缩放到视频尺寸
+        img = Image.open(cover_path).convert("RGB")
+        img_w, img_h = img.size
+        scale = min(w / img_w, h / img_h)
+        new_w, new_h = int(img_w * scale), int(img_h * scale)
+        img = img.resize((new_w, new_h), Image.LANCZOS)
+        bg = Image.new("RGB", (w, h), (0, 0, 0))
+        bg.paste(img, ((w - new_w) // 2, (h - new_h) // 2))
+
+        cover_clip = ImageClip(np.array(bg), duration=duration)
+        final = concatenate_videoclips([cover_clip, video])
+        final.write_videofile(output_path, fps=video.fps or 30,
+                             codec="libx264", audio_codec="aac",
+                             preset="fast")
+        video.close()
+        final.close()
+
+        if os.path.exists(output_path):
+            logger.info("封面已嵌入视频开头: %s", output_path)
+            return output_path
+        return video_path
+    except Exception as exc:
+        logger.warning("封面嵌入异常: %s", exc)
+        return video_path
+
 class XiaohongshuMCPUploader:
     """小红书 MCP 上传器（HTTP JSON-RPC 方式）。"""
 
@@ -597,14 +639,14 @@ class XiaohongshuMCPUploader:
             "content": content,
             "video": container_video,
         }
-        # 已知限制：MCP publish_with_video 工具当前不支持 cover 参数（传入会返回 invalid params）
-        # cover_path 参数保留在接口中，待 MCP 上游支持后启用
-        if cover_path:
-            logger.warning(
-                "小红书 MCP publish_with_video 不支持 cover 参数，封面将被忽略。"
-                "视频发布后请在小红书 App 中手动设置封面。(cover_path=%s)",
-                cover_path,
-            )
+        # MCP publish_with_video 不支持 cover 参数，
+        # 通过 ffmpeg 将封面嵌入视频开头，小红书会自动截取第一帧作为封面
+        if cover_path and os.path.exists(cover_path):
+            patched_video = _prepend_cover_to_video(video_path, cover_path, duration=1.0)
+            if patched_video != video_path:
+                container_video = _copy_to_docker_mount(patched_video, "data")
+                arguments["video"] = container_video
+                logger.info("已将封面嵌入视频开头用于小红书封面")
         # MCP 工具期望中文可见范围
         _visibility_map = {"public": "公开可见", "private": "仅自己可见", "friends": "仅互关好友可见"}
         if visible_level:

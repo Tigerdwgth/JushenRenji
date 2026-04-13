@@ -240,6 +240,9 @@ def upload(
             if not _login_with_cookies(bili, cookies):
                 return None
 
+            # 强制覆盖 biliup 的旧 UA（防 412）
+            bili._BiliBili__session.headers["user-agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+
             # 上传视频文件
             logger.info(f"开始上传视频: {video_path}")
             video_part = bili.upload_file(
