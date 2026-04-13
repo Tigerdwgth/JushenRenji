@@ -22,7 +22,9 @@
 │   │   └── audio_helpers.py  # TTS/音频安全处理
 │   ├── main.py
 │   ├── website_video_pipeline.py  # 网页顶部视频转发（下载并双平台发布）
-│   └── video_creator.py      # 视频合成（Ken Burns + 转场 + 字幕）
+│   ├── video_creator.py      # 视频合成（Ken Burns + 转场 + 字幕）
+│   ├── manim_engine.py       # Manim 动画演示引擎
+│   └── manim_references/     # Manim 参考代码与最佳实践
 ├── tests                     # pytest 单元测试
 │   ├── distribution/
 │   └── ...
@@ -42,6 +44,12 @@
 7. **图片智能筛选**：LLM 打分选取最重要的图片，Qwen-VL 生成图片讲解。
 8. **Demo 视频下载**：自动从论文项目主页提取并下载演示视频，嵌入最终视频开头。
 9. **网页视频转发**：从研究网页提取顶部主视频、封面和页面摘要，直接转发到 B站 与 小红书。
+10. **Manim 动画演示** (v3.0)：自动生成论文的 Manim 数学动画演示视频。
+    - opencode + DeepSeek-R1 + manim_skill 最佳实践生成 ManimCE 代码
+    - 固定 4 场景结构：标题→背景→方法→实验结果
+    - TTS 讲解与 structured_plan 脚本同步
+    - 动画后自动切换到论文图片，按 caption 智能匹配
+    - 自动文本换行（中英文）+ 边界检查防超框
 
 ## 使用说明
 
@@ -55,6 +63,9 @@ pip install biliup  # B站上传
 pip3 install torch torchvision torchaudio  # Linux
 pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126  # Windows
 pip install -e .
+pip install manim  # Manim 动画引擎
+npm install -g opencode-ai  # opencode（Manim 代码生成）
+npx skills add adithya-s-k/manim_skill --yes  # ManimCE 最佳实践
 ```
 
 ### 修复tesseract兼容性问题
@@ -189,6 +200,15 @@ python src/main.py --filename "{papername}" --platforms xiaohongshu
 
 # 禁用上传，仅生成本地视频
 python src/main.py --filename “{papername}” --platforms none
+
+# 生成 Manim 动画演示视频
+python src/main.py --filename "{papername}" --manim --platforms none
+
+# Manim + TTS 语音讲解
+python src/main.py --filename "{papername}" --manim --manim-tts --platforms none
+
+# 高质量 1080p
+python src/main.py --filename "{papername}" --manim --manim-quality high --platforms none
 
 # 控制视频时长（默认300秒=5分钟）
 python src/main.py --filename “{papername}” --target_duration 180 --platforms none
