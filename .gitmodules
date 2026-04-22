@@ -1,0 +1,3 @@
+[submodule "thirdparty/edit-banana"]
+	path = thirdparty/edit-banana
+	url = https://github.com/bit-datalab/edit-banana.git

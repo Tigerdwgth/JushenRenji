@@ -18,10 +18,12 @@ import logging
 import glob
 import time as _time
 import yaml
+import shutil
 
 from moviepy import VideoFileClip, concatenate_videoclips, AudioFileClip
 
 from src.llm_tools.prompts import prompts_dict
+from src.figure_analyzer import analyze_and_prepare, analysis_to_manim_context, check_consistency_with_vision_llm, extract_frame_from_video
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +85,7 @@ def _init_manim_llm():
         api_key=api_key,
         base_url="https://api.deepseek.com/v1",
     )
-    return client, "deepseek-reasoner"
+    return client, "deepseek-chat"
 
 
 # 延迟初始化
@@ -130,6 +132,9 @@ class ManimEngine:
         self.output_dir = output_dir
         self.temp_dir = os.path.join(output_dir, "temp")
         os.makedirs(self.output_dir, exist_ok=True)
+        # 清空旧的临时文件，避免残留影响新 pipeline
+        if os.path.exists(self.temp_dir):
+            shutil.rmtree(self.temp_dir, ignore_errors=True)
         os.makedirs(self.temp_dir, exist_ok=True)
         self._config_cache = None
 
@@ -148,12 +153,18 @@ class ManimEngine:
             if not text_match:
                 return full
             text = text_match.group(1)
-            if "\\n" in text or "\n" in text or len(text) <= TEXT_WRAP_THRESHOLD:
+            if "\\n" in text or "\n" in text:
                 return full
-            threshold = TEXT_WRAP_THRESHOLD
+            # 中英文使用不同的换行阈值
             if _has_cjk(text):
+                threshold = 15  # 中文字符宽度约为英文 2 倍
+                if len(text) <= threshold:
+                    return full
                 lines = [text[i:i+threshold] for i in range(0, len(text), threshold)]
             else:
+                threshold = 40  # 英文用更宽的阈值
+                if len(text) <= threshold:
+                    return full
                 words = text.split(" ")
                 lines = []
                 current = ""
@@ -173,14 +184,53 @@ class ManimEngine:
         return code
 
     def _remove_trailing_fadeout(self, code):
-        """移除末尾的 FadeOut，替换为 wait（防止最后一帧变黑）。"""
+        """移除末尾的 FadeOut，替换为 wait（防止最后一帧变黑）。
+        只删除 construct 方法最后 5 行内的 FadeOut，避免误删中间的分页 FadeOut。"""
         lines = code.split('\n')
+        # 找到最后一个非空非注释行的位置
+        last_content_idx = len(lines) - 1
         for i in range(len(lines) - 1, -1, -1):
+            stripped = lines[i].strip()
+            if stripped and not stripped.startswith('#') and not stripped.startswith('_all_mobs'):
+                last_content_idx = i
+                break
+        # 只在最后 5 行范围内查找 FadeOut
+        search_start = max(0, last_content_idx - 5)
+        for i in range(last_content_idx, search_start - 1, -1):
             if 'FadeOut' in lines[i] and 'self.play' in lines[i]:
                 indent = len(lines[i]) - len(lines[i].lstrip())
                 lines[i] = ' ' * indent + 'self.wait(2)  # 保持内容显示'
                 break
         return '\n'.join(lines)
+
+
+    def _ensure_page_fadeouts(self, code):
+        """检测多个 FadeIn(pageN) 之间缺少 FadeOut 的情况并自动插入。"""
+        import re as _re
+        lines = code.split('\n')
+        result = []
+        # 跟踪当前活跃的 page 变量名
+        active_pages = []
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            # 检测 FadeIn(someVar) 调用
+            fadein_match = _re.search(r'self\.play\(\s*FadeIn\(\s*(\w+)', stripped)
+            if fadein_match:
+                var_name = fadein_match.group(1)
+                # 如果有活跃的 page 且当前 FadeIn 的不是同一个，插入 FadeOut
+                for active in active_pages:
+                    if active != var_name:
+                        indent = len(line) - len(line.lstrip())
+                        result.append(' ' * indent + f'self.play(FadeOut({active}))')
+                        result.append(' ' * indent + 'self.wait(0.3)')
+                active_pages = [var_name]
+            # 检测 FadeOut 调用，从 active 列表移除
+            fadeout_match = _re.search(r'FadeOut\(\s*(\w+)', stripped)
+            if fadeout_match and not fadein_match:
+                var_name = fadeout_match.group(1)
+                active_pages = [p for p in active_pages if p != var_name]
+            result.append(line)
+        return '\n'.join(result)
 
     def _inject_scale_safety(self, code):
         """注入 VGroup 缩放安全网，防止内容超出画框。"""
@@ -194,20 +244,69 @@ class ManimEngine:
             '            if _all_mobs.height > ' + str(MAX_FRAME_HEIGHT) + ':',
             '                _all_mobs.scale_to_fit_height(' + str(SAFE_FRAME_HEIGHT) + ')',
         ]
+        # 找到 construct 方法体的最后一行（8 空格缩进的语句），但避免插入到
+        # 函数调用括号内部。向上搜索第一个完整语句（不以 ) 结尾且非空）
         insert_idx = len(lines) - 1
+        paren_depth = 0
         for i in range(len(lines) - 1, -1, -1):
             stripped = lines[i].strip()
-            if stripped and not stripped.startswith('#'):
-                insert_idx = i
+            if not stripped or stripped.startswith('#'):
+                continue
+            # 跟踪括号深度，确保不在未闭合的括号内插入
+            paren_depth += stripped.count(')') - stripped.count('(')
+            if paren_depth <= 0 and lines[i].startswith('        '):
+                insert_idx = i + 1
                 break
         lines = lines[:insert_idx] + safety + lines[insert_idx:]
         return '\n'.join(lines)
 
+    def _enforce_reading_time(self, code):
+        """防闪屏：把 self.wait() 短于阅读需要的都抬升。
+
+        规则：
+        - 上一行是 self.play(... Write|FadeIn ...) → 后续 self.wait(<2.0) 抬到 2.0
+        - 上一行是 self.play(... FadeOut ...) → 后续 self.wait(<0.8) 抬到 0.8
+        - 其他情况 self.wait(<0.6) 抬到 0.8（消除闪烁）
+        """
+        import re as _re
+        text_re = _re.compile(r"\bself\.play\([^)]*(?:Write|FadeIn|GrowArrow|Create|Indicate)[^)]*\)")
+        fadeout_re = _re.compile(r"\bself\.play\([^)]*FadeOut[^)]*\)")
+        wait_re = _re.compile(r"\bself\.wait\(\s*([0-9]*\.?[0-9]+)\s*\)")
+        lines = code.split("\n")
+        last = None  # "text" | "fadeout" | "other" | None
+        out = []
+        for line in lines:
+            m = wait_re.search(line)
+            if m:
+                val = float(m.group(1))
+                if last == "text" and val < 2.0:
+                    new = 2.0
+                elif last == "fadeout" and val < 0.8:
+                    new = 0.8
+                elif val < 0.6:
+                    new = 0.8
+                else:
+                    new = val
+                if new != val:
+                    old = m.group(0)
+                    repl = "self.wait(%s)" % ("%g" % new)
+                    line = line.replace(old, repl, 1)
+            elif text_re.search(line):
+                last = "text"
+            elif fadeout_re.search(line):
+                last = "fadeout"
+            elif "self.play(" in line:
+                last = "other"
+            out.append(line)
+        return "\n".join(out)
+
     def inject_bounds_check(self, code):
-        """注入自动缩放安全网、移除末尾 FadeOut、自动给长文本换行。"""
+        """注入自动缩放安全网、移除末尾 FadeOut、自动给长文本换行、确保分页 FadeOut、抬升 wait 时长。"""
         code = self._wrap_long_texts(code)
+        code = self._ensure_page_fadeouts(code)
         code = self._remove_trailing_fadeout(code)
         code = self._inject_scale_safety(code)
+        code = self._enforce_reading_time(code)
         return code
 
 
@@ -217,23 +316,35 @@ class ManimEngine:
 
 
         # 写 prompt 到临时文件避免 shell 转义问题
-        prompt_file = os.path.join(self.temp_dir, "_opencode_prompt.txt")
+        prompt_file = os.path.join(os.path.abspath(self.temp_dir), "_opencode_prompt.txt")
         with open(prompt_file, "w", encoding="utf-8") as f:
             f.write(prompt_text)
 
         env = os.environ.copy()
         env["DEEPSEEK_API_KEY"] = self._get_deepseek_key()
+        env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+        env["CUDA_VISIBLE_DEVICES"] = "0"
         env.pop("http_proxy", None)
         env.pop("https_proxy", None)
         env.pop("HTTP_PROXY", None)
         env.pop("HTTPS_PROXY", None)
 
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        cmd = f'PATH=/usr/local/bin:$PATH opencode run -m deepseek/deepseek-reasoner "$(cat {prompt_file})"'
+        # 写 wrapper 脚本避免 shell 参数展开问题
+        wrapper_script = os.path.join(os.path.abspath(self.temp_dir), "_opencode_run.sh")
+        with open(wrapper_script, "w") as wf:
+            wf.write("#!/bin/bash\n")
+            wf.write("export PATH=/usr/local/bin:$PATH\n")
+            # 用变量读取 prompt，避免 $(cat) 在命令行展开时卡死
+            wf.write(f'PROMPT_FILE="{prompt_file}"\n')
+            wf.write('PROMPT=$(cat "$PROMPT_FILE")\n')
+            wf.write('opencode run -m deepseek/deepseek-chat "$PROMPT"\n')
+        os.chmod(wrapper_script, 0o755)
+        cmd = f'bash {wrapper_script}' 
         try:
             result = subprocess.run(
                 cmd, shell=True, capture_output=True, text=True,
-                timeout=600, env=env, cwd=project_root
+                env=env, cwd=project_root
             )
             output = result.stdout
             if not output:
@@ -290,9 +401,23 @@ class ManimEngine:
     # ------------------------------------------------------------------
 
     def generate_manim_code(self, scene_info):
-        """根据场景信息调用 LLM 生成 ManimCE 代码。"""
+        """根据场景信息调用 LLM 生成 ManimCE 代码。支持图像分析增强。
+
+        策略：
+        - MethodScene (有图像分析) -> opencode headless (利用 manim_skill)
+        - 其他场景 -> 直接 DeepSeek API (更快更稳定)
+        """
         scene_type = scene_info.get("type", "formula")
-        prompt_key = f"manim_generate_{scene_type}"
+        figure_analysis = scene_info.get("figure_analysis")
+
+        # 选择 prompt
+        if figure_analysis and scene_type == "architecture":
+            if figure_analysis.get("manimml_code"):
+                prompt_key = "manim_generate_method_with_manimml"
+            else:
+                prompt_key = "manim_generate_architecture_from_figure"
+        else:
+            prompt_key = f"manim_generate_{scene_type}"
         prompt = prompts_dict.get(prompt_key, prompts_dict.get("manim_generate_formula", ""))
 
         sname = scene_info.get("scene_name", "CustomScene")
@@ -303,23 +428,52 @@ class ManimEngine:
             user_content += f"LaTeX 公式: {scene_info['latex']}\n"
         if scene_info.get("script_excerpt"):
             user_content += f"脚本原文: {scene_info['script_excerpt']}\n"
+
+        # 注入图像分析上下文
+        if figure_analysis:
+            manim_ctx = figure_analysis.get("manim_context", "")
+            if manim_ctx:
+                user_content += f"\n{manim_ctx}\n"
+            manimml_code = figure_analysis.get("manimml_code")
+            if manimml_code:
+                user_content += f"\n## ManimML 参考代码:\n{manimml_code}\n"
+            # 注入 Edit Banana 精确元素数据（包含 Manim 坐标）
+            eb_elements = figure_analysis.get("eb_manim_elements", "")
+            if eb_elements:
+                user_content += f"\n## 论文方法图精确元素数据（SAM3 分割，坐标已转为 Manim 坐标系）\n"
+                user_content += f"## 请严格按照这些坐标和颜色生成 Manim 代码！\n"
+                user_content += eb_elements + "\n"
+                logger.info("已注入 EB 精确元素数据 (%d 字符)", len(eb_elements))
+            logger.info("已注入图像分析上下文 (类型: %s, %d 个组件)",
+                       figure_analysis.get("figure_type", "unknown"),
+                       len(figure_analysis.get("analysis", {}).get("components", [])))
+
         user_content += f"\n论文原文参考（前2000字）:\n{self.paper_text[:2000]}\n"
         user_content += "\n重要：生成的动画内容必须忠实于这篇论文的具体方法，不要用通用的示例。\n"
 
         full_prompt = prompt + "\n\n" + user_content
-        logger.info("使用 opencode headless 生成 Manim 代码...")
-        raw = self._opencode_generate(full_prompt)
+
+        # 混合生成策略：MethodScene 用 opencode，其他用直接 API
+        use_opencode = bool(figure_analysis) and scene_type == "architecture"
+
+        if use_opencode:
+            logger.info("使用 opencode headless 生成代码 (prompt_key=%s)...", prompt_key)
+            raw = self._opencode_generate(full_prompt)
+            if not raw:
+                logger.warning("opencode 失败，降级使用直接 API...")
+                raw = manim_chat(prompt, user_content)
+        else:
+            logger.info("使用 DeepSeek API 生成代码 (prompt_key=%s)...", prompt_key)
+            raw = manim_chat(prompt, user_content)
 
         # 清理 markdown 代码块标记
-        code = raw.strip()
+        code = (raw or "").strip()
         if code.startswith("```"):
             code = re.sub(r"^```\w*\n?", "", code)
             code = re.sub(r"\n?```$", "", code)
             code = code.strip()
 
         return code
-
-    # ------------------------------------------------------------------
     # 渲染
     # ------------------------------------------------------------------
 
@@ -338,7 +492,7 @@ class ManimEngine:
 
             try:
                 result = subprocess.run(
-                    cmd, shell=True, capture_output=True, text=True, timeout=120
+                    cmd, shell=True, capture_output=True, text=True, timeout=86400
                 )
 
                 ext = "gif" if fmt == "gif" else "mp4"
@@ -434,11 +588,19 @@ class ManimEngine:
         # 按 caption/context 关键词匹配
         result_kws = ["table", "表", "result", "实验", "experiment", "performance", "ablation", "success"]
         method_kws = ["architecture", "架构", "pipeline", "framework", "模块", "method", "设计", "结构"]
+        # 公式类图片关键词 - 这类图片不适合做视频主画面
+        formula_kws = ["formula", "equation", "公式", "目标函数", "损失函数",
+                       "约束条件", "constraint", "objective", "loss function",
+                       "optimization", "数学", "derivation", "推导"]
 
         for path in pic_files:
             info = captions.get(path, {})
             text = (info.get("caption", "") + " " + info.get("context", "") + " " + info.get("section", "")).lower()
 
+            # 公式类图片直接跳过，不放入任何 bucket
+            if any(kw in text for kw in formula_kws) and not any(kw in text for kw in method_kws):
+                logger.info("跳过公式类图片: %s", os.path.basename(path))
+                continue
             if any(kw in text for kw in result_kws):
                 img_map["results"].append(path)
             elif any(kw in text for kw in method_kws):
@@ -646,6 +808,86 @@ class ManimEngine:
                        os.path.basename(img) if img else "None")
         return scene_image_paths
 
+
+    def _consistency_check_and_fix(self, video_path, code, sdef, quality, fmt,
+                                    figure_analysis, method_images, max_fix_rounds=2):
+        """对 MethodScene 做 Qwen-VL 一致性检查，不通过则让 opencode 修正。"""
+        if not method_images:
+            return video_path
+
+        original_image = method_images[0]
+        for round_idx in range(max_fix_rounds):
+            # 从渲染视频提取帧
+            frame_path = extract_frame_from_video(video_path)
+            if not frame_path:
+                logger.warning("无法提取渲染帧，跳过一致性检查")
+                return video_path
+
+            # Qwen-VL 对比
+            check = check_consistency_with_vision_llm(original_image, frame_path)
+            if not check:
+                logger.warning("一致性检查调用失败，跳过")
+                return video_path
+
+            overall = check.get("overall_score", 0)
+            passed = check.get("pass", overall >= 6)
+            missing = check.get("missing_components", [])
+            suggestions = check.get("suggestions", [])
+
+            logger.info("一致性检查 (第 %d 轮): overall=%s, pass=%s, missing=%s",
+                       round_idx + 1, overall, passed, missing)
+
+            if passed:
+                logger.info("MethodScene 通过一致性检查 (score=%s)", overall)
+                return video_path
+
+            # 不通过: 用反馈让 opencode 修正
+            logger.warning("MethodScene 未通过一致性检查 (score=%s), 尝试修正...", overall)
+
+            fix_prompt = (
+                "你是 ManimCE 专家。以下 Manim 代码渲染后与论文原图不够一致，请修正。\n\n"
+                "【一致性检查反馈】:\n"
+                "- 总分: %s/10\n"
+                "- 缺失组件: %s\n"
+                "- 改进建议: %s\n\n"
+                "【原始代码】:\n```python\n%s\n```\n\n"
+                "请修正代码，补充缺失的组件，调整位置使其与原图更一致。\n"
+                "仅输出完整修正后的 Python 代码。"
+            ) % (overall, ", ".join(missing), "; ".join(suggestions), code)
+
+            # 用 opencode 或直接 API 修正
+            if figure_analysis:
+                eb_elements = figure_analysis.get("eb_manim_elements", "")
+                if eb_elements:
+                    fix_prompt += "\n\n【图表精确规格（请参照）】:\n" + eb_elements
+
+            raw = self._opencode_generate(fix_prompt)
+            if not raw:
+                raw = manim_chat(fix_prompt)
+
+            fixed_code = (raw or "").strip()
+            if fixed_code.startswith("```"):
+                import re as _re
+                fixed_code = _re.sub(r"^```\w*\n?", "", fixed_code)
+                fixed_code = _re.sub(r"\n?```$", "", fixed_code)
+                fixed_code = fixed_code.strip()
+
+            if not fixed_code:
+                logger.warning("修正代码为空，保留原版")
+                return video_path
+
+            fixed_code = self.inject_bounds_check(fixed_code)
+            new_video = self.render_scene(fixed_code, sdef["scene_name"], quality=quality, fmt=fmt)
+            if new_video:
+                video_path = new_video
+                code = fixed_code
+                logger.info("修正后重新渲染成功: %s", new_video)
+            else:
+                logger.warning("修正后渲染失败，保留原版")
+                return video_path
+
+        return video_path
+
     def run(self, tts=False, quality="medium", fmt="mp4"):
         """完整流程：固定 4 场景 -> 生成代码 -> 渲染 -> 拼接。"""
         logger.info("=== Manim 演示生成开始 ===")
@@ -664,36 +906,61 @@ class ManimEngine:
                 "scene_name": "TitleScene",
                 "type": "title",
                 "section": "opening",
-                "description": f"论文标题和开场。脚本: {plan_scripts.get('opening', '')[:200]}",
+                "description": f"论文标题和开场。脚本: {plan_scripts.get('opening', '')[:800]}",
             },
             {
                 "scene_name": "IntroScene",
                 "type": "flow",
                 "section": "intro",
-                "description": f"背景介绍和问题引出。脚本: {plan_scripts.get('intro', '')[:200]}",
+                "description": f"背景介绍和问题引出。脚本: {plan_scripts.get('intro', '')[:800]}",
             },
             {
                 "scene_name": "MethodScene",
                 "type": "architecture",
                 "section": "method",
-                "description": f"核心方法展示。脚本: {plan_scripts.get('method', '')[:200]}",
+                "description": f"核心方法展示。脚本: {plan_scripts.get('method', '')[:800]}",
             },
             {
                 "scene_name": "ResultsScene",
                 "type": "results",
                 "section": "results",
-                "description": f"实验结果展示。脚本: {plan_scripts.get('results', '')[:200]}",
+                "description": f"实验结果展示。脚本: {plan_scripts.get('results', '')[:800]}",
             },
         ]
 
         # 3. Narrations = plan scripts directly
         narrations = [plan_scripts.get(s["section"], "") for s in scene_defs]
 
+        # 3.5 分析方法图（用于 MethodScene 增强）
+        figure_analysis_result = None
+        pipeline_images = self.load_pipeline_images()
+        method_images = pipeline_images.get("method", [])
+        if method_images:
+            main_figure = method_images[0]
+            logger.info("分析方法主图: %s", main_figure)
+            try:
+                paper_ctx = self.paper_text[:1500] if self.paper_text else ""
+                figure_analysis_result = analyze_and_prepare(main_figure, paper_ctx)
+                if figure_analysis_result and figure_analysis_result.get("analysis"):
+                    logger.info("方法图分析成功: 类型=%s, %d 组件, %d 连接",
+                               figure_analysis_result.get("figure_type", "?"),
+                               len(figure_analysis_result["analysis"].get("components", [])),
+                               len(figure_analysis_result["analysis"].get("connections", [])))
+                else:
+                    logger.warning("方法图分析返回空结果")
+            except Exception as e:
+                logger.warning("方法图分析失败，将使用默认生成: %s", e)
+
         # 4. Generate + render each scene
         scene_videos = []
         rendered_indices = []
         for i, sdef in enumerate(scene_defs):
             logger.info("生成场景 %d/4: %s (%s)", i + 1, sdef["scene_name"], sdef["type"])
+
+            # MethodScene 注入图像分析结果
+            if sdef["type"] == "architecture" and figure_analysis_result:
+                sdef["figure_analysis"] = figure_analysis_result
+
             code = self.generate_manim_code(sdef)
             if not code:
                 logger.warning("场景 %s 代码生成失败，跳过", sdef["scene_name"])
@@ -702,6 +969,12 @@ class ManimEngine:
             code = self.inject_bounds_check(code)
             video_path = self.render_scene(code, sdef["scene_name"], quality=quality, fmt=fmt)
             if video_path:
+                # MethodScene: Qwen-VL 一致性检查
+                if sdef["type"] == "architecture" and figure_analysis_result:
+                    video_path = self._consistency_check_and_fix(
+                        video_path, code, sdef, quality, fmt,
+                        figure_analysis_result, pipeline_images.get("method", [])
+                    )
                 scene_videos.append(video_path)
                 rendered_indices.append(i)
             else:
@@ -718,8 +991,7 @@ class ManimEngine:
             self.generate_tts(scene_defs, rendered_narrations)
             audio_paths = getattr(self, "_audio_parts", [])
 
-        # 6. Load pipeline images + compose
-        pipeline_images = self.load_pipeline_images()
+        # 6. Compose (pipeline_images already loaded in step 3.5)
         scene_image_paths = self._assign_images_to_scenes(
             pipeline_images, scene_defs, rendered_indices
         )

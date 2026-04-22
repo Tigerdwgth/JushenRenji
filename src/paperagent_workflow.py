@@ -57,6 +57,57 @@ file_handler.setLevel(logging.DEBUG)
 file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
 logging.getLogger().addHandler(file_handler)
 
+
+def _clean_pipeline_cache(cache_dir="./cache", pic_dir="./pic",
+                          manim_temp_dir="./output/manim/temp",
+                          manim_media_dir="./output/manim/media",
+                          manim_presentation="./output/manim/manim_presentation.mp4"):
+    """全量清理旧缓存，确保每次 pipeline 使用干净数据。
+
+    覆盖 cache/pic/manim 所有会跨论文污染的产物：PDF、文本、结构化脚本、音频、
+    图像解释、封面、提取图片、manim 渲染中间产物和最终视频。
+    """
+    import glob as _glob
+    import shutil as _shutil
+
+    cache_patterns = [
+        "summary*.wav", "expl_*.wav", "test_audio_*.wav",
+        "image_explanations*.json",
+        "paper_text.txt", "structured_plan.json",
+        "cached_pdf.pdf",
+        "dashscope_cover.png", "gemini_cover.png", "ai_cover_bg.png",
+    ]
+    for pattern in cache_patterns:
+        for f in _glob.glob(os.path.join(cache_dir, pattern)):
+            try:
+                os.remove(f)
+                logging.debug("清理缓存: %s", f)
+            except OSError:
+                pass
+
+    if os.path.exists(pic_dir):
+        for ext in ("*.png", "*.jpg", "*.jpeg"):
+            for f in _glob.glob(os.path.join(pic_dir, ext)):
+                try:
+                    os.remove(f)
+                except OSError:
+                    pass
+        logging.info("已清理 pic 目录的图片: %s", pic_dir)
+
+    for d in (manim_temp_dir, manim_media_dir):
+        if os.path.exists(d):
+            _shutil.rmtree(d, ignore_errors=True)
+            logging.info("已清理 Manim 目录: %s", d)
+    if os.path.exists(manim_presentation):
+        try:
+            os.remove(manim_presentation)
+            logging.info("已清理 Manim 成片: %s", manim_presentation)
+        except OSError:
+            pass
+
+    logging.info("Pipeline 缓存清理完成（全量）")
+
+
 # ---- 时长预算常量 ----
 TTS_CHARS_PER_SECOND = 4  # 中文 TTS cosyvoice-v1 约 4 字/秒
 SUMMARY_BUDGET_RATIO = 0.6  # 总结占比
@@ -162,6 +213,7 @@ def get_videoclips(paper_text: str = "", demo_url: str = "", download_folder: st
 
 def run_pdf_to_video_pipeline(paper=None,pdf_file_path=None,demowebsite=None,en_title="",prefix="",target_duration=300):
     logging.info("开始程序")
+    _clean_pipeline_cache()
     # 输入PDF文件路径
     if not pdf_file_path:
         pdf_file_path, demowebsite = get_inputs()
@@ -388,6 +440,14 @@ def download_if_remote(pdf_file_path):
     - 下载的文件会保存为 `./cache/cached_pdf.pdf`。
     """
     if pdf_file_path.startswith("http"):
+        # 缓存检测：如果 cached_pdf.pdf 存在且不超过 1 小时，直接复用
+        cache_path = os.path.join("./cache", "cached_pdf.pdf")
+        if os.path.isfile(cache_path):
+            import time as _time
+            age = _time.time() - os.path.getmtime(cache_path)
+            if age < 3600:
+                logging.info("复用缓存 PDF（%.0f 秒前下载）: %s", age, cache_path)
+                return cache_path
         logging.info("下载PDF文件")
         def download_file(url, max_retries=3):
             """下载远程文件并保存到本地，带指数退避重试。"""
@@ -427,6 +487,7 @@ def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().str
     - output_filename (str): 生成的视频文件路径，默认是 "./output/daily_summary.mp4"。
     """
     logging.info("开始生成每日 arXiv 论文总结视频")
+    _clean_pipeline_cache()
     # 获取最新的论文
     papers = get_paper_from_arxiv(query=query)
     if papers is None:
@@ -536,6 +597,10 @@ def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().str
 
             with open(f'./cache/image_explanations_part_{paper_idx+1}.json', 'w', encoding='utf-8') as f:
                 json.dump(explanations, f, ensure_ascii=False, indent=2)
+            # 同时更新主文件（Manim engine 读取此文件）
+            with open('./cache/image_explanations.json', 'w', encoding='utf-8') as f:
+                json.dump(explanations, f, ensure_ascii=False, indent=2)
+            logging.info("已保存图像解释到 ./cache/image_explanations.json")
         except Exception as e:
             logging.warning("图像解释保存失败: %s", e)
         if not images:
