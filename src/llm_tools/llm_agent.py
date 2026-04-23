@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import time as _time
 import sys
 import shutil
 import logging
@@ -26,6 +27,8 @@ logging.basicConfig(
 # ---------------------------------------------------------------------------
 
 _initialized = False
+
+_PLAN_SECTIONS = ("opening", "intro", "method", "results")
 MANUALLY_EXTRACT_IMAGES = False
 model = None
 client = None
@@ -95,12 +98,6 @@ def _parse_json_response(raw: str):
             return json.loads(match.group())
         except json.JSONDecodeError:
             pass
-    idx = s.rfind('}')
-    while idx > 0:
-        try:
-            return json.loads(s[:idx + 1])
-        except json.JSONDecodeError:
-            idx = s.rfind('}', 0, idx)
     logging.warning('无法解析为 JSON: %s', raw[:2000])
     return {}
 
@@ -146,7 +143,7 @@ def generate_video_proceedings(text):
     prompt = get_prompt(inspect.currentframe().f_code.co_name)
     return create_chat_completion(prompt, text)
 
-def generate_structured_video_plan(text, word_budget: int = 1000, max_attempts: int = 3):
+def generate_structured_video_plan(text, word_budget: int = 1000, max_attempts: int = 2):
     """生成结构化视频脚本（5段式：opening → intro → method → results → conclusion）。
 
     Returns:
@@ -157,17 +154,16 @@ def generate_structured_video_plan(text, word_budget: int = 1000, max_attempts: 
     prompt = get_prompt(inspect.currentframe().f_code.co_name)
     prompt = prompt + f"\n总字数预算约{word_budget}字。"
     prompt += "\n严格要求：直接输出 JSON 对象，不要使用 markdown 代码围栏（不要 ```json ... ```），不要任何额外文字。"
-    required = ('opening', 'intro', 'method', 'results')
+    required = _PLAN_SECTIONS
     last_plan = {}
     for attempt in range(max_attempts):
         raw = create_chat_completion(prompt, text, max_tokens=8192)
         plan = _parse_json_response(raw)
-        last_plan = plan
         if plan and all(isinstance(plan.get(k), dict) and plan[k].get('script') for k in required):
             return plan
         logging.warning('结构化脚本生成/解析不完整 (第%d次)，重试', attempt + 1)
     logging.warning('结构化脚本生成失败，回退为普通摘要')
-    return last_plan
+    return {}
 
 
 def structured_plan_to_text(plan: dict) -> str:
@@ -177,7 +173,7 @@ def structured_plan_to_text(plan: dict) -> str:
     """
     if not plan:
         return ""
-    sections = ["opening", "intro", "method", "results"]
+    sections = list(_PLAN_SECTIONS)
     parts = []
     for section in sections:
         section_data = plan.get(section, {})
@@ -215,7 +211,6 @@ def get_paper_demo_website(text):
 def create_chat_completion(prompt, user_content=None, max_retries=3, max_tokens=None):
     """调用 LLM 生成内容，自带指数退避重试。"""
     _ensure_initialized()
-    import time as _time
     messages = [{"role": "system", "content": prompt}]
     if user_content:
         messages.append({"role": "user", "content": user_content})
@@ -223,7 +218,7 @@ def create_chat_completion(prompt, user_content=None, max_retries=3, max_tokens=
     for attempt in range(max_retries):
         try:
             kwargs = {"model": model, "messages": messages}
-            if max_tokens:
+            if max_tokens is not None:
                 kwargs["max_tokens"] = max_tokens
             response = client.chat.completions.create(**kwargs)
             return response.choices[0].message.content
