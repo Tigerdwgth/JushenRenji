@@ -477,7 +477,7 @@ def download_if_remote(pdf_file_path):
         return -1
     return pdf_file_path
 
-def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().strftime(r"%Y-%m-%d"), max_papers=20, output_filename="./output/daily_summary.mp4",long_or_short="short",target_duration=300):
+def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().strftime(r"%Y-%m-%d"), max_papers=20, output_filename="./output/daily_summary.mp4",long_or_short="short",target_duration=300, paper_link=None):
     """
     为每天 arXiv 上的论文生成一个简短的日报性总结视频。
     参数：
@@ -488,21 +488,38 @@ def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().str
     """
     logging.info("开始生成每日 arXiv 论文总结视频")
     _clean_pipeline_cache()
-    # 获取最新的论文
-    papers = get_paper_from_arxiv(query=query)
-    if papers is None:
-        raise RuntimeError(f"拉取 arXiv 论文失败，query={query}")
-    logging.info(f"找到 {len(papers)} 篇论文,正在筛选...")
-    # 过滤日期
-    papers = filter_papers_by_date(papers, date)
-    # 限制论文数量
-    if len(papers) > max_papers:
-        papers = papers[:max_papers]
-        logging.info(f"限制论文数量为 {max_papers} 篇")
+    cn_titles = []
+    if paper_link:
+        # 直接按 arxiv link / id 拉单篇，跳过 HTML 搜索 + 日期过滤
+        from env_setup import parse_arxiv_link, fetch_arxiv_by_id
+        arxiv_id = parse_arxiv_link(paper_link)
+        meta = fetch_arxiv_by_id(arxiv_id)
+        submitted = meta.get("submitted_date") or meta.get("updated_date") or ""
+        papers = [Paper(
+            title=meta["title"],
+            authors=[],
+            abstract=meta.get("abstract", ""),
+            link=meta["pdf_url"],  # 下载时 workflow 会 GET 这个 URL
+            announced_date=submitted + "T00:00:00Z" if submitted else "",
+            submitted_date=submitted + "T00:00:00Z" if submitted else "",
+            comments="",
+        )]
+        logging.info(f"[paper-link] 精确拉取单篇: id={arxiv_id} title={meta['title'][:80]}")
+    else:
+        # 获取最新的论文
+        papers = get_paper_from_arxiv(query=query)
+        if papers is None:
+            raise RuntimeError(f"拉取 arXiv 论文失败，query={query}")
+        logging.info(f"找到 {len(papers)} 篇论文,正在筛选...")
+        # 过滤日期
+        papers = filter_papers_by_date(papers, date)
+        # 限制论文数量
+        if len(papers) > max_papers:
+            papers = papers[:max_papers]
+            logging.info(f"限制论文数量为 {max_papers} 篇")
     # 如果没有找到符合条件的论文，抛出异常
-    cn_titles=[]
     if not papers:
-        raise RuntimeError(f"未找到符合条件的论文，query={query}, date={date}")
+        raise RuntimeError(f"未找到符合条件的论文，query={query}, date={date}, paper_link={paper_link}")
     else:
         logging.info(f"找到 {len(papers)} 篇论文")
         logging.info(f"日期: {date}")

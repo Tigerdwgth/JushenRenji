@@ -130,6 +130,7 @@ if __name__ == "__main__":
             date=str(yesterday),
             long_or_short=video_length,
             target_duration=target_duration,
+            paper_link=paper_link,
         )
         if not path or not os.path.exists(path):
             raise RuntimeError(f"视频生成失败，输出文件不存在: {path}")
