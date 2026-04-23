@@ -16,7 +16,6 @@ import re
 import subprocess
 import logging
 import glob
-import time as _time
 import yaml
 import shutil
 
@@ -41,86 +40,6 @@ MAX_FRAME_HEIGHT = 7          # 画框最大高度
 SAFE_FRAME_WIDTH = 11         # 缩放目标宽度
 SAFE_FRAME_HEIGHT = 6.5       # 缩放目标高度
 
-
-
-def _load_manim_references():
-    """加载 manim_skill 参考示例作为 few-shot 上下文。"""
-    ref_dir = os.path.join(os.path.dirname(__file__), "manim_references")
-    refs = []
-    if os.path.isdir(ref_dir):
-        for fname in sorted(os.listdir(ref_dir)):
-            fpath = os.path.join(ref_dir, fname)
-            if os.path.isfile(fpath):
-                with open(fpath, "r", encoding="utf-8") as f:
-                    refs.append(f"### {fname}\n{f.read()}")
-    return "\n\n".join(refs) if refs else ""
-
-
-_manim_references_cache = None
-
-def _get_manim_references():
-    global _manim_references_cache
-    if _manim_references_cache is None:
-        _manim_references_cache = _load_manim_references()
-        logger.info("加载了 manim_skill 参考示例 (%d 字符)", len(_manim_references_cache))
-    return _manim_references_cache
-
-
-def _init_manim_llm():
-    """初始化 Manim 专用的 LLM 客户端（DeepSeek-R1 via DeepSeek API）。"""
-    from openai import OpenAI
-
-    config_path = "config.yaml"
-    if os.path.exists(config_path):
-        with open(config_path, "r", encoding="utf-8") as f:
-            config = yaml.safe_load(f) or {}
-    else:
-        config = {}
-
-    api_key = config.get("llm_api_key") or os.environ.get("LLM_API_KEY", "")
-    if not api_key:
-        raise ValueError("llm_api_key 未配置")
-
-    client = OpenAI(
-        api_key=api_key,
-        base_url="https://api.deepseek.com/v1",
-    )
-    return client, "deepseek-chat"
-
-
-# 延迟初始化
-_manim_client = None
-_manim_model = None
-
-
-def manim_chat(prompt, user_content=None, max_retries=3):
-    """Manim 专用 LLM 调用（DeepSeek-R1 + manim_skill 参考示例）。"""
-    global _manim_client, _manim_model
-    if _manim_client is None:
-        _manim_client, _manim_model = _init_manim_llm()
-        logger.info("Manim LLM 客户端初始化完成: model=%s", _manim_model)
-
-    # 注入 manim_skill 参考示例
-    refs = _get_manim_references()
-    if refs:
-        prompt = prompt + "\n\n## ManimCE 参考示例和最佳实践（请严格参考这些代码风格）\n" + refs[:8000]
-
-    messages = [{"role": "user", "content": prompt + ("\n\n" + user_content if user_content else "")}]
-
-    for attempt in range(max_retries):
-        try:
-            response = _manim_client.chat.completions.create(
-                model=_manim_model,
-                messages=messages,
-            )
-            return response.choices[0].message.content
-        except Exception as e:
-            wait = 2 ** attempt
-            logger.warning("Manim LLM 调用失败 (第%d次), %ds 后重试: %s", attempt + 1, wait, e)
-            if attempt < max_retries - 1:
-                _time.sleep(wait)
-            else:
-                raise
 
 
 class ManimEngine:
@@ -381,6 +300,16 @@ class ManimEngine:
             logger.error("opencode 调用失败: %s", e)
             return ""
 
+    def _opencode_generate_with_retry(self, prompt_text, attempts=3):
+        """连续调用 opencode，直到拿到非空代码或次数用尽。"""
+        for i in range(attempts):
+            raw = self._opencode_generate(prompt_text)
+            if raw:
+                return raw
+            logger.warning("opencode 返回空 (第 %d/%d 次)", i + 1, attempts)
+        logger.error("opencode 连续 %d 次失败，放弃", attempts)
+        return ""
+
     def _get_config(self):
         """读取并缓存 config.yaml 配置。"""
         if self._config_cache is None:
@@ -453,18 +382,9 @@ class ManimEngine:
 
         full_prompt = prompt + "\n\n" + user_content
 
-        # 混合生成策略：MethodScene 用 opencode，其他用直接 API
-        use_opencode = bool(figure_analysis) and scene_type == "architecture"
-
-        if use_opencode:
-            logger.info("使用 opencode headless 生成代码 (prompt_key=%s)...", prompt_key)
-            raw = self._opencode_generate(full_prompt)
-            if not raw:
-                logger.warning("opencode 失败，降级使用直接 API...")
-                raw = manim_chat(prompt, user_content)
-        else:
-            logger.info("使用 DeepSeek API 生成代码 (prompt_key=%s)...", prompt_key)
-            raw = manim_chat(prompt, user_content)
+        # 所有场景统一走 opencode（禁止直连 API 生成 manim 代码）
+        logger.info("使用 opencode 生成代码 (prompt_key=%s)...", prompt_key)
+        raw = self._opencode_generate_with_retry(full_prompt, attempts=3)
 
         # 清理 markdown 代码块标记
         code = (raw or "").strip()
@@ -517,13 +437,16 @@ class ManimEngine:
                 if attempt < max_retries - 1:
                     fix_prompt = prompts_dict.get("manim_fix_code", "")
                     fix_content = f"原始代码:\n```python\n{code}\n```\n\n错误信息:\n```\n{error_msg[:3000]}\n```"
-                    code = manim_chat(fix_prompt, fix_content)
-                    code = code.strip()
+                    code = self._opencode_generate_with_retry(fix_prompt + "\n\n" + fix_content, attempts=2)
+                    code = (code or "").strip()
                     if code.startswith("```"):
                         code = re.sub(r"^```\w*\n?", "", code)
                         code = re.sub(r"\n?```$", "", code)
                         code = code.strip()
-                    logger.info("LLM 已修复代码，准备重试")
+                    if code:
+                        logger.info("opencode 已修复代码，准备重试")
+                    else:
+                        logger.warning("opencode 修复失败，无法重试")
 
             except subprocess.TimeoutExpired:
                 logger.error("场景 %s 渲染超时", scene_name)
@@ -861,9 +784,7 @@ class ManimEngine:
                 if eb_elements:
                     fix_prompt += "\n\n【图表精确规格（请参照）】:\n" + eb_elements
 
-            raw = self._opencode_generate(fix_prompt)
-            if not raw:
-                raw = manim_chat(fix_prompt)
+            raw = self._opencode_generate_with_retry(fix_prompt, attempts=2)
 
             fixed_code = (raw or "").strip()
             if fixed_code.startswith("```"):
