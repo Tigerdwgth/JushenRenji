@@ -4,6 +4,8 @@ import datetime
 import logging
 import argparse
 
+from env_setup import apply_network_workarounds, fetch_arxiv_by_id, parse_arxiv_link
+apply_network_workarounds()
 from paperagent_workflow import generate_daily_arxiv_summary
 from src.distribution.orchestrator import parse_platforms, upload_generated_content
 from src.manim_engine import ManimEngine
@@ -20,6 +22,12 @@ logging.getLogger().addHandler(file_handler)
 def parse_args():
     parser = argparse.ArgumentParser(description="Arxiv Paper Processing Script")
     #papername
+    parser.add_argument(
+        "--paper-link",
+        type=str,
+        default=None,
+        help="Direct arxiv URL (e.g. https://arxiv.org/abs/2410.11758). Bypasses --filename date guessing.",
+    )
     parser.add_argument(
         "--filename",
         type=str,
@@ -100,24 +108,22 @@ if __name__ == "__main__":
     manim_quality = getattr(args, "manim_quality", "medium")
 
     try:
-        if not filename:
-            raise ValueError("参数 --filename 不能为空，例如 --filename cs.RO")
-        today=datetime.datetime.now()
-        # arXiv 周末不更新，周一需要回退到上周五
-        # 周一(0)->回退3天到周五, 周日(6)->回退2天到周五, 周六(5)->回退1天到周五
-        weekday = today.weekday()
-        if weekday == 0:  # 周一
-            delta_days = 3
-        elif weekday == 6:  # 周日
-            delta_days = 2
-        elif weekday == 5:  # 周六
-            delta_days = 1
+        paper_link = getattr(args, "paper_link", None)
+        today_dt = datetime.datetime.now()
+        today = today_dt.strftime(r"%Y-%m-%d")
+        if paper_link:
+            arxiv_id = parse_arxiv_link(paper_link)
+            meta = fetch_arxiv_by_id(arxiv_id)
+            filename = meta["title"]
+            yesterday = meta["submitted_date"] or meta["updated_date"]
+            logging.info("[paper-link] id=%s title=%s date=%s", arxiv_id, filename[:80], yesterday)
         else:
-            delta_days = 1
-        target_date = today - datetime.timedelta(days=delta_days)
-        yesterday = target_date.strftime(r"%Y-%m-%d")
-        today=today.strftime(r"%Y-%m-%d")
-        logging.info("今天是%s,查询论文日期是%s", today, yesterday)
+            if not filename:
+                raise ValueError("必须给 --paper-link <url> 或 --filename <query>")
+            weekday = today_dt.weekday()
+            delta_days = {0: 3, 6: 2, 5: 1}.get(weekday, 1)
+            yesterday = (today_dt - datetime.timedelta(days=delta_days)).strftime(r"%Y-%m-%d")
+            logging.info("今天是%s, 查询论文日期是%s", today, yesterday)
         path, titles, cn_titles, summaries, paper_links, project_links = generate_daily_arxiv_summary(
             query=filename,
             max_papers=1,
@@ -173,6 +179,31 @@ if __name__ == "__main__":
                 if manim_path:
                     logging.info("Manim 演示视频已生成: %s", manim_path)
                     print(f"Manim output: {manim_path}")
+                    # 将 Manim 演示拼接到主视频前面
+                    try:
+                        from moviepy import VideoFileClip, concatenate_videoclips
+                        manim_clip = VideoFileClip(manim_path)
+                        main_clip = VideoFileClip(path)
+                        # 统一分辨率：将 Manim 视频缩放到主视频尺寸
+                        if manim_clip.size != main_clip.size:
+                            manim_clip = manim_clip.resized(main_clip.size)
+                        combined = concatenate_videoclips([manim_clip, main_clip], method="compose")
+                        combined_path = path  # 覆盖原视频
+                        combined.write_videofile(combined_path, codec="libx264", preset="ultrafast",
+                                                 audio_codec="aac", logger=None)
+                        manim_clip.close()
+                        main_clip.close()
+                        combined.close()
+                        # faststart remux so moov box is at the front (required for XHS streaming)
+                        import subprocess as _sp
+                        fs_path = combined_path + ".fs.mp4"
+                        _sp.check_call(["/usr/bin/ffmpeg", "-v", "warning", "-y",
+                                        "-i", combined_path, "-c", "copy",
+                                        "-movflags", "+faststart", fs_path])
+                        os.replace(fs_path, combined_path)
+                        logging.info("Manim 演示已合并到主视频 (+faststart): %s", combined_path)
+                    except Exception as e:
+                        logging.warning("Manim 视频合并失败，将单独保留: %s", e)
                 else:
                     logging.error("Manim 演示视频生成失败")
             else:
@@ -184,8 +215,27 @@ if __name__ == "__main__":
         video_path = path
         cover_path = path.replace(".mp4", ".png")
         video_title = cn_titles[0] if len(titles) == 1 else f"Arxiv具身日报{today}"
+        # B站标题限制80字符，超出则截断
+        if len(video_title) > 78:
+            video_title = video_title[:77] + "…"
+            logging.info("标题截断为80字符以内: %s", video_title)
         video_tags = "人工智能,具身智能,机器人,模仿学习,强化学习,自动驾驶,具身人机"
         video_desc = "\n".join(titles)
+        try:
+            base_mp4 = os.path.splitext(path)[0]
+            with open(base_mp4 + "_meta.json", "w", encoding="utf-8") as _mf:
+                import json as _j
+                _j.dump({
+                    "path": path,
+                    "titles": titles,
+                    "cn_titles": cn_titles,
+                    "summaries": summaries,
+                    "paper_links": paper_links,
+                    "project_links": project_links,
+                }, _mf, ensure_ascii=False, indent=2)
+            logging.info("meta saved: %s", base_mp4 + "_meta.json")
+        except Exception as _e:
+            logging.warning("meta save failed: %s", _e)
         if platforms:
             upload_results = upload_generated_content(
                 platforms=platforms,
