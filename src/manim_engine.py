@@ -257,7 +257,7 @@ class ManimEngine:
             # 用变量读取 prompt，避免 $(cat) 在命令行展开时卡死
             wf.write(f'PROMPT_FILE="{prompt_file}"\n')
             wf.write('PROMPT=$(cat "$PROMPT_FILE")\n')
-            wf.write('opencode run -m deepseek/deepseek-chat "$PROMPT"\n')
+            wf.write('opencode run "$PROMPT"\n')
         os.chmod(wrapper_script, 0o755)
         cmd = f'bash {wrapper_script}' 
         try:
