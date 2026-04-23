@@ -73,15 +73,7 @@ def _image_to_base64(image: Any) -> str:
 
 def _extract_json_from_text(text: str) -> Optional[Dict]:
     """Extract JSON from LLM text. Delegates to the canonical _parse_json_response."""
-    # 清理LLM返回的内容，移除markdown代码块标记
-    cleaned_text = text.strip()
-    if cleaned_text.startswith("```json"):
-        cleaned_text = cleaned_text[7:]
-    if cleaned_text.endswith("```"):
-        cleaned_text = cleaned_text[:-3]
-    cleaned_text = cleaned_text.strip()
-
-    result = _parse_json_response(cleaned_text)
+    result = _parse_json_response(text)
     return result or None
 
 
