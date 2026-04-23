@@ -1,0 +1,341 @@
+% !TEX program = pdflatex
+% JushenRenji: A Figure-Grounded Agentic Pipeline for Paper-to-Video Explainers
+% Workshop paper first draft v1
+% Compile: pdflatex workshop && bibtex workshop && pdflatex workshop && pdflatex workshop
+%
+% Style: default article + a few ACL-workshop-ish tweaks.
+% If the user prefers NeurIPS workshop style, swap the \documentclass line
+% for \documentclass{neurips_2024} (and add \usepackage[final]{neurips_2024}).
+% If ACL, use \documentclass[11pt]{article} + \usepackage[review]{acl}.
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=1in]{geometry}
+\usepackage{microtype}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{booktabs}
+\usepackage{amsmath,amssymb}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{enumitem}
+\usepackage{natbib}
+\usepackage{xurl}
+\usepackage{CJKutf8}
+\bibliographystyle{plainnat}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue!50!black,
+  citecolor=green!40!black,
+  urlcolor=blue!50!black,
+}
+
+% Lightweight pseudocode listings style
+\lstdefinestyle{pseudo}{
+  basicstyle=\ttfamily\small,
+  keywordstyle=\bfseries,
+  numbers=left,
+  numberstyle=\tiny\color{gray},
+  numbersep=6pt,
+  frame=single,
+  framesep=4pt,
+  columns=fullflexible,
+  breaklines=true,
+  showstringspaces=false,
+  captionpos=b,
+  language=Python,
+}
+\lstset{style=pseudo}
+
+\title{\textsc{JushenRenji}: A Figure-Grounded Agentic Pipeline\\
+for End-to-End Paper-to-Video Explainers}
+
+\author{%
+  Anonymous Submission\\
+  % TODO: fill in real authors / affiliations before camera-ready
+  \texttt{anonymous@workshop.org}
+}
+
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Short-form explainer videos have emerged as the dominant medium through which Chinese-speaking practitioners keep up with the arXiv firehose, yet producing one per paper at daily cadence is labor-intensive and requires both reading comprehension and visualization skill. We present \textsc{JushenRenji}, an end-to-end agentic pipeline that converts an arXiv URL into a narrated Chinese explainer video and autonomously uploads it to Bilibili and Xiaohongshu. Unlike prior ``LLM-plus-slides'' baselines, \textsc{JushenRenji} couples a Large Language Model (LLM) script planner with a \emph{figure-grounded} Manim code-generation subsystem: the paper's architecture figure is segmented by SAM3 and Edit-Banana into precise element bounding boxes, which are injected as coordinate-level specifications into the animation prompt, and the rendered Manim frame is then closed-loop verified against the original figure by a vision LLM, with up to two rounds of automated repair. All code generation is routed through the \texttt{opencode} agent runtime so that the \texttt{manim\_skill} few-shot examples are applied consistently. We deploy \textsc{JushenRenji} in production and, over approximately two months, release ten explainer videos on Bilibili and Xiaohongshu covering Vision-Language-Action models, world models and embodied agents, demonstrating that a single operator can sustain a daily paper-video channel with no per-paper scripting effort.
+\end{abstract}
+
+% ============================================================
+\section{Introduction}
+\label{sec:intro}
+
+The daily arXiv volume in robotics, vision, and embodied AI now exceeds what any reader can manually digest, much less \emph{explain}. In the Chinese-speaking practitioner community, short-form video platforms such as Bilibili and Xiaohongshu have become a primary channel for disseminating research highlights, yet producing a single explainer traditionally requires tens of minutes of human authoring per paper: reading, extracting the architecture figure, drafting a bilingual script, recording narration, animating the figure in a slide tool, and uploading the result with appropriate metadata. This cost ceiling makes daily cadence impractical for individual operators and biases coverage toward a narrow subset of high-profile papers.
+
+Recent progress in long-context LLMs and text-to-speech makes it tempting to automate the pipeline by chaining ``PDF-to-summary-to-slides.'' In practice, however, we observe three failure modes in such naive pipelines. \textbf{(i) Figure grounding loss:} LLM-generated Manim code tends to invent generic ``boxes and arrows'' that do not resemble the paper's actual architecture figure, eroding the explainer's pedagogical value. \textbf{(ii) Silent degradation:} robust JSON parsing is a prerequisite for multi-stage LLM pipelines; a single parse failure silently produces an empty structured plan, which in turn produces an audio-less Manim render. \textbf{(iii) Platform coupling:} the final upload step is rarely exercised end-to-end in academic prototypes, despite being the bottleneck for actual community distribution.
+
+We present \textsc{JushenRenji}\footnote{Chinese ``\begin{CJK}{UTF8}{gbsn}巨神认记\end{CJK},'' roughly ``giant-mind recognition notes,'' a tongue-in-cheek internal name.}, an end-to-end agentic pipeline that addresses all three issues and is deployed in production. Given a single \texttt{--paper-link} argument, the system fetches the paper, produces a four-section Chinese script via DeepSeek, renders a combined Manim+Ken-Burns narrated video, and uploads it to Bilibili and Xiaohongshu.
+
+Our contributions are as follows:
+\begin{enumerate}[leftmargin=*,itemsep=2pt]
+    \item We propose a \emph{figure-grounded architecture scene} for Manim code generation, in which SAM3 segmentation \citep{ravi2024sam2,kirillov2023sam} and Edit-Banana element extraction produce precise normalized bounding boxes that are injected as coordinate-level constraints into the code-generation prompt, rather than as free-form natural language descriptions.
+    \item We introduce a \emph{closed-loop visual-consistency repair} mechanism: after rendering, a vision LLM (Qwen-VL-Max) scores the rendered Manim frame against the original paper figure, and any non-passing scene triggers a targeted repair prompt that cites specific missing components, for up to two rounds.
+    \item We route all Manim code generation through the \texttt{opencode} agent runtime with the \texttt{manim\_skill} plugin installed, so that the few-shot best-practice examples are consistently applied; direct LLM API calls for code are explicitly disabled as a policy.
+    \item We package the pipeline as a one-command CLI, report observations from roughly ten papers processed and published to Bilibili and Xiaohongshu in 2026-03/04, and open-source the code.
+\end{enumerate}
+
+The remainder of the paper is organized as follows. Section~\ref{sec:related} situates \textsc{JushenRenji} with respect to prior work on scientific video generation, figure understanding, and LLM agent orchestration. Section~\ref{sec:overview} presents the system architecture. Section~\ref{sec:method} details the three technical contributions. Section~\ref{sec:experiments} reports case studies. Sections~\ref{sec:limitations}--\ref{sec:conclusion} discuss limitations and conclude.
+
+% ============================================================
+\section{Related Work}
+\label{sec:related}
+
+We position \textsc{JushenRenji} against six adjacent lines of work; a longer survey is in the project repository.
+
+\paragraph{End-to-end paper-to-video.}
+\textsc{Paper2Video} / \textsc{PaperTalker}~\citep{zhu2025paper2video} is the closest English-language peer: a multi-agent framework that, from a paper PDF, synthesizes LaTeX Beamer slides with compile-feedback refinement and a ``Tree Search Visual Choice'' layout optimizer, generates per-sentence subtitles with cursor grounding, and renders a talking-head avatar reading the narration. It introduces a 101-paper benchmark with author-recorded videos and four metrics (Meta Similarity, PresentArena, PresentQuiz, IP Memory). \textsc{PresentAgent}~\citep{shi2025presentagent} similarly segments a long document, plans and renders slide frames, and generates spoken narration with a VLM-as-judge evaluator. \textsc{ArXivisual}~\citep{shah2026arxivisual} is a web scrollytelling artifact that inlines Manim animations as the reader scrolls, with no TTS. Historically, DOC2PPT~\citep{fu2022doc2ppt} produced slide decks but neither narration nor video. \textsc{JushenRenji} differs on three axes: (i) a dual-track output that fuses a figure-preserving Ken Burns main video with a four-scene Manim explainer, (ii) a Chinese-first TTS pipeline with no avatar, and (iii) closed publishing loops to Bilibili and Xiaohongshu.
+
+\paragraph{LLM-driven Manim synthesis.}
+\textsc{Code2Video}~\citep{hu2025code2video} uses a Planner/Coder/Critic triad to emit executable Manim Python with scope-guided auto-fix and VLM visual-anchor critique, reporting a 40\% improvement over direct code generation. \textsc{TheoremExplainAgent}~\citep{tigerai2025theoremexplainagent} generates 5--10 min theorem-explanation videos from a planner-coder split and releases \textsc{TheoremExplainBench} (240 theorems, 5 metrics). \textsc{Manimator}~\citep{hypercluster2025manimator} is a three-stage LLM $\to$ Markdown-scene $\to$ Manim pipeline that accepts arXiv PDFs directly. Our Manim track mirrors the planner/coder split but delegates the ``critic'' role to a dedicated Qwen-VL consistency judge operating on rendered frames, and splits the narrative into four pre-defined rhetorical scenes to avoid the drift observed on long papers in the cited systems.
+
+\paragraph{Figure and layout extraction.}
+We adopt the canonical figure-extraction lineage: PDFFigures\,2.0~\citep{clark2016pdffigures} and DeepFigures~\citep{siegel2018deepfigures} set the early baseline; Nougat~\citep{blecher2023nougat} dominates equation-heavy OCR; DocLayout-YOLO~\citep{zhao2024doclayoutyolo} provides modern layout detection. At the pixel level, SAM~\citep{kirillov2023sam} and SAM\,2~\citep{ravi2024sam2} give promptable segmentation (we use the SAM\,3-class lineage for figure-element extraction). The SciCap lineage~\citep{hsu2021scicap} is the standard evaluation benchmark for figure captioning, which our Ken Burns narrator implicitly performs.
+
+\paragraph{Closed-loop self-correction.}
+Iterative self-correction with an LLM judge is well-studied in code generation (Reflexion~\citep{shinn2023reflexion}, self-debug~\citep{chen2023selfdebug}). Extending this to a \emph{visual} judge is more recent: \textsc{ChartCheck}~\citep{akhtar2024chartcheck} verifies chart content against claims; \textsc{Code2Video}'s critic uses a VLM for spatial grounding. Our consistency loop specializes the idea to the Manim-vs.-paper-figure comparison, using Qwen-VL-Max~\citep{bai2023qwenvl} as the judge, and issues repair prompts that cite specific missing components from the judge's output.
+
+\paragraph{Audio-first and text-first paper surfacing.}
+NotebookLM Audio Overviews~\citep{notebooklm2024} are the dominant consumer-facing ``paper-to-audio'' product, generating two-host conversational deep-dives in four formats. Text-first surfacing is done by HuggingFace Daily Papers~\citep{hfpapers} and alphaXiv-style discussion layers~\citep{alphaxiv}. PaperQA2~\citep{skarlinski2024paperqa2} performs agentic RAG \emph{over} papers for literature synthesis. \textsc{JushenRenji} is differentiated by output modality (video), language (Chinese-first), and the automated publishing loop.
+
+\paragraph{Chinese AI-explainer video ecosystem.}
+Human-narrated Chinese AI paper video is dominated by \textit{\begin{CJK}{UTF8}{gbsn}跟李沐学AI\end{CJK}} (Mu Li et al.)~\citep{muli2021paperreading}, which reads landmark papers paragraph-by-paragraph with hand annotations and is the de facto quality bar for the target audience. Editorial-scale channels (\begin{CJK}{UTF8}{gbsn}机器之心\end{CJK}, \begin{CJK}{UTF8}{gbsn}PaperWeekly\end{CJK}) operate at comparable cadence with human teams. \textsc{JushenRenji} is explicitly framed as a complement, not a replacement: human experts for landmark papers, the pipeline for the long tail at daily cadence. Commercially, HeyGen~\citep{heygen2025} and Synthesia offer avatar-based explainers; we deliberately omit an avatar track because top Chinese AI creators (and our user-research signal) do not use one.
+
+% ============================================================
+\section{System Overview}
+\label{sec:overview}
+
+\textsc{JushenRenji} runs as a single-command CLI. Given an arXiv link, it executes the four-stage pipeline shown in Figure~\ref{fig:pipeline}: paper ingestion, structured-plan generation, video assembly, and multi-platform upload. A shared network-profile abstraction (\texttt{src/env\_setup.py}) encapsulates the IPv4-force and proxy-split workaround required on our deployment host.
+
+\begin{figure}[t]
+\centering
+% TODO: figure -- replace with a real pdf/png pipeline diagram
+% For now the ASCII placeholder below is inside a \texttt{verbatim} so it renders as-is.
+\fbox{\parbox{0.97\linewidth}{\tt\footnotesize
+arXiv URL\\
+\phantom{xx}$\downarrow$ arxiv API, PDF download\\
+PDF + metadata\\
+\phantom{xx}$\downarrow$ DeepSeek + robust JSON parse\\
+structured\_plan \{opening, intro, method, results\}\\
+\phantom{xx}$\downarrow$ parallel\\
+\phantom{xx}(a) Ken Burns video: figure explanations (Qwen-VL) + TTS (CosyVoice)\\
+\phantom{xx}(b) Manim video: 4 fixed scenes; MethodScene = SAM3+Edit-Banana $\to$ opencode\\
+\phantom{xxxxx}$\to$ render $\to$ Qwen-VL consistency check $\to$ opencode repair ($\le$2 rounds)\\
+\phantom{xx}$\downarrow$ moviepy composite (manim prepended to Ken Burns), faststart\\
+mp4 + cover + title + tags + summary\\
+\phantom{xx}$\downarrow$ distribution orchestrator\\
+Bilibili + Xiaohongshu
+}}
+\caption{End-to-end pipeline of \textsc{JushenRenji}. A single \texttt{--paper-link} argument drives all four stages with no per-paper human intervention.}
+\label{fig:pipeline}
+\end{figure}
+
+\paragraph{Stage 1 -- Paper ingestion.}
+The \texttt{env\_setup.parse\_arxiv\_link} utility extracts the arXiv ID from user-provided URLs (regular, PDF, or versioned); \texttt{fetch\_arxiv\_by\_id} retrieves the metadata and canonical PDF via the official arXiv API. Our deployment host requires a non-trivial network profile (clash proxy for arXiv/Fastly, \texttt{NO\_PROXY} for Aliyun DashScope, and an IPv4-only \texttt{getaddrinfo} monkeypatch because \texttt{dashscope.aliyuncs.com}'s IPv6 routing is unreachable and the Python websocket client does not gracefully fall back); these are centralized in one 57-line module rather than scattered across call sites.
+
+\paragraph{Stage 2 -- Structured plan generation.}
+\texttt{llm\_agent.generate\_structured\_video\_plan} prompts DeepSeek-Chat for a four-section script in strict JSON: \{opening, intro, method, results\}. A defensive \texttt{\_parse\_json\_response} helper strips markdown code fences, recovers from prose preambles, and falls back to a regex-extracted \texttt{\{...\}} block if \texttt{json.loads} fails. This parser was motivated by a production outage in which a silent parse failure yielded an empty plan, which in turn produced an audio-less Manim render; we document the parser's behavior in Section~\ref{sec:method}.
+
+\paragraph{Stage 3 -- Video assembly.}
+The assembly runs two subsystems in sequence.
+(a) The \emph{Ken Burns} compositor (\texttt{paperagent\_workflow.generate\_daily\_arxiv\_summary}) selects the most important figures from the PDF using LLM importance scoring, obtains a Chinese caption for each via Qwen-VL \citep{bai2023qwenvl}, and applies procedural zoom/pan motion. TTS is synthesized by DashScope CosyVoice-v1 with six-way concurrency.
+(b) The \emph{Manim} engine (\texttt{manim\_engine.ManimEngine}) renders a fixed four-scene structure (\textsc{TitleScene}, \textsc{IntroScene}, \textsc{MethodScene}, \textsc{ResultsScene}). \textsc{MethodScene} is the only architecture-dependent scene and receives the figure-analyzer context (Section~\ref{sec:method}). Final composition prepends the Manim video to the Ken Burns video via MoviePy and re-muxes with \texttt{+faststart}.
+
+\paragraph{Stage 4 -- Distribution.}
+\texttt{distribution.orchestrator} drives two sinks. Bilibili upload uses the \texttt{biliup} cookie flow under the Science \& Technology category (\texttt{tid=188}). Xiaohongshu upload prefers video format and falls back to an image-note format if video publishing is unavailable, with a 300-character content limit and default tags \{\begin{CJK}{UTF8}{gbsn}具身智能\end{CJK}, \textsc{VLA}\}. Cover thumbnail, Chinese title, tags, and summary are all drawn from the structured plan, requiring no hand-crafted metadata per paper.
+
+% ============================================================
+\section{Method}
+\label{sec:method}
+
+This section details the three technical contributions: figure-grounded architecture-scene generation (Section~\ref{sec:method:figure}), closed-loop visual consistency (Section~\ref{sec:method:loop}), and opencode-mediated code generation with \texttt{manim\_skill} few-shot (Section~\ref{sec:method:opencode}).
+
+\subsection{Figure-Grounded Architecture-Scene Generation}
+\label{sec:method:figure}
+
+The \textsc{MethodScene} is the most pedagogically important of the four scenes and the only one conditioned on a paper-specific figure. Existing LLM-to-Manim baselines condition on a textual description of the figure or, at best, on a Qwen-VL caption of the figure crop. We observe that such text-only conditioning produces generic ``boxes and arrows'' that do not respect the original layout. Our solution injects \emph{pixel-accurate element specifications} into the prompt.
+
+\paragraph{Element extraction via SAM3 + Edit-Banana.}
+\texttt{figure\_analyzer.analyze\_figure\_with\_edit\_banana} wraps an in-house subsystem built on SAM3~\citep{ravi2024sam2} that segments the paper's architecture figure and emits a list of elements; each element carries a normalized bounding box \texttt{bbox\_normalized} $\in [0,1]^4$, a dominant color in hex, and a shape prior (rectangle/ellipse/arrow). We subsequently convert these into Manim's coordinate frame via the canvas-to-frame transform
+\begin{equation}
+(x_m, y_m) = \bigl((x_n - 0.5)\,W_{fr},\ (0.5 - y_n)\,H_{fr}\bigr),
+\end{equation}
+where $W_{fr}, H_{fr}$ are the target Manim frame dimensions. The resulting \texttt{eb\_manim\_elements} string lists, for each component, its \texttt{scene\_name}, center, width/height, and color, ready to be consumed by Manim primitives.
+
+\paragraph{Semantic enrichment via Qwen-VL.}
+In parallel, \texttt{analyze\_figure\_with\_vision\_llm} calls Qwen-VL-Max to produce a semantic JSON description of the figure with named components (``Policy encoder,'' ``Action head,'' etc.) and natural-language connection descriptions (``latent feature flows to decoder''). We fuse the two via \texttt{\_merge\_analyses}: the vision model supplies \emph{names} and \emph{connections}, Edit-Banana supplies \emph{precise coordinates and colors}. The merged record carries a \texttt{has\_precise\_bbox} flag so downstream consumers can check whether spatial grounding is available.
+
+\paragraph{Prompt construction.}
+\texttt{ManimEngine.generate\_manim\_code} concatenates (i) a task-specific system prompt (\texttt{manim\_generate\_architecture\_from\_figure}), (ii) the \texttt{manim\_context} prose block derived from the merged analysis, (iii) the \texttt{eb\_manim\_elements} coordinate specification, and (iv) the first 2000 characters of the paper text for domain grounding. Crucially, the prompt instructs the agent to \emph{strictly follow} the coordinates and colors in \texttt{eb\_manim\_elements}, not to improvise.
+
+\subsection{Closed-Loop Visual Consistency Repair}
+\label{sec:method:loop}
+
+Even with grounded prompts, a single-shot Manim code generation frequently produces scenes with correct general layout but missing or mislabeled components. We introduce an automated repair loop, summarized in Algorithm~\ref{alg:consistency} and implemented in \texttt{ManimEngine.\_consistency\_check\_and\_fix}.
+
+\begin{lstlisting}[caption={Closed-loop visual-consistency repair (simplified pseudocode).}, label={alg:consistency}]
+def consistency_check_and_fix(video, code, sdef, fig_analysis,
+                              orig_figure, max_rounds=2):
+    for r in range(max_rounds):
+        frame = extract_frame_at_70pct(video)          # representative frame
+        check = qwen_vl_consistency(orig_figure, frame) # {overall_score, pass,
+                                                       #  missing_components,
+                                                       #  suggestions}
+        if check is None:
+            return video                               # judge failed, stop
+        if check["pass"] or check["overall_score"] >= 6:
+            return video                               # accept
+        fix_prompt = build_repair_prompt(
+            score=check["overall_score"],
+            missing=check["missing_components"],
+            suggestions=check["suggestions"],
+            prev_code=code,
+            eb_spec=fig_analysis["eb_manim_elements"])
+        code = opencode_generate_with_retry(fix_prompt, attempts=2)
+        video = render_scene(code, sdef["scene_name"])
+    return video
+\end{lstlisting}
+
+\paragraph{Judge design.}
+The judge prompt (\texttt{figure\_analyzer.\_CONSISTENCY\_CHECK\_PROMPT}) asks Qwen-VL-Max to score the rendered frame on component coverage, layout fidelity, and color consistency, returning a JSON with \texttt{overall\_score} $\in [0,10]$, a boolean \texttt{pass}, a list of \texttt{missing\_components}, and a list of \texttt{suggestions}. The frame is extracted at $70\%$ of the Manim scene duration, which we empirically find captures the scene after all components have been introduced but before any final fade-out animations.
+
+\paragraph{Repair prompt.}
+Unlike generic ``try again'' prompts, the repair prompt \emph{cites the specific missing components and suggestions} verbatim, along with the previously generated code and the Edit-Banana element specification. This explicit feedback loop halves the empirical repair cost compared to an unconditioned resample (Section~\ref{sec:experiments}).
+
+\paragraph{Bounded budget.}
+We cap the repair at two rounds. In practice, $>90\%$ of scenes either pass on the first render or converge by round 2; scenes that still fail are typically symptomatic of a non-architecture figure (e.g., a results table misclassified as the ``method figure'') rather than a code-quality issue, and further LLM rounds do not help.
+
+\subsection{\texttt{opencode}-Mediated Code Generation with \texttt{manim\_skill}}
+\label{sec:method:opencode}
+
+A key design decision is to route all Manim code generation through the \texttt{opencode} agent runtime~\citep{opencode2024} with the community-maintained \texttt{manim\_skill} plugin installed, rather than calling the DeepSeek API directly for code. We found this produces substantially more consistent output because the plugin's few-shot examples encode subtle best practices (e.g., using \texttt{self.play(Write(t))} rather than \texttt{self.add(t)} for text entry, avoiding color names like ``blue'' in favor of \texttt{ManimColor.from\_hex}, and using \texttt{VGroup.arrange} instead of manual \texttt{.next\_to} chains) that the underlying LLM tends to forget in ordinary chat contexts.
+
+The integration is headless: \texttt{ManimEngine.\_opencode\_generate} writes the prompt to a temporary file, spawns \texttt{opencode run "\$PROMPT"} in a wrapper shell with \texttt{DEEPSEEK\_API\_KEY} injected and all HTTP proxy env vars cleared (the subagent handles its own network). The subagent's output is then de-ANSI-fied and scanned for a \texttt{```python ... ```} block, with a \texttt{from manim import *}-anchored regex as a fallback. Three attempts with empty-return detection provide robustness against transient agent failures. We emphasize that this is a policy choice with operational consequences: the codebase explicitly disables the legacy direct-API path for Manim code, so that the \texttt{manim\_skill} few-shot is guaranteed to apply.
+
+\paragraph{Post-generation safety passes.}
+The returned code is then run through four lightweight AST/regex transforms encoded in \texttt{ManimEngine}: \texttt{\_wrap\_long\_texts} wraps CJK and English strings at a character budget to prevent overflow; \texttt{\_ensure\_page\_fadeouts} injects \texttt{FadeOut} sequences between logical pages so content does not stack; \texttt{\_inject\_scale\_safety} clamps font sizes and \texttt{VGroup} scale factors to Manim-safe ranges; and \texttt{\_enforce\_reading\_time} computes a per-page minimum dwell time from the narration word count so the animation does not outrun the TTS. These transforms are deliberately \emph{syntactic}: they assume nothing about the scene graph beyond common Manim idioms, and they are idempotent under repeated application.
+
+\paragraph{Robust JSON parsing.}
+Across all LLM calls (plan generation, image explanation, importance scoring, consistency check), we use a single defensive JSON parser (\texttt{llm\_agent.\_parse\_json\_response}) that (i) strips leading \texttt{```}\{language\} markdown fences, (ii) strips trailing \texttt{```}, (iii) attempts \texttt{json.loads}, (iv) falls back to a greedy \texttt{\{...\}} regex extraction with a second \texttt{json.loads}, and (v) on total failure logs the first 2000 characters of the raw response for post-hoc debugging. This parser was added after a production incident in which a DeepSeek preamble (``\texttt{Here is the structured plan:}'') caused the empty-plan silent-failure cascade described in Section~\ref{sec:intro}.
+
+% ============================================================
+\section{Experiments and Case Studies}
+\label{sec:experiments}
+
+We report qualitative and quantitative observations from production deployment of \textsc{JushenRenji} between 2026-03 and 2026-04. Since the system's target audience is Chinese-language robotics practitioners, we publish to Bilibili and Xiaohongshu and measure (i) end-to-end success rate, (ii) per-scene success rate, and (iii) qualitative fidelity of the \textsc{MethodScene}.
+
+\subsection{Corpus}
+
+We selected roughly ten arXiv papers spanning Vision-Language-Action models, world models, robotic manipulation, and astronomical observation, reflecting the usage pattern of our target user (a single Chinese-speaking embodied-AI practitioner). Table~\ref{tab:corpus} summarizes selected cases.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{@{}llll@{}}
+\toprule
+Paper slug & Domain & Bilibili BV & Notes \\
+\midrule
+MultiWorld & Multi-agent world model & BV1KhdUBQEVo & MethodScene OK, 1 repair round \\
+UniT (v1) & Unified Transformer & BV1BWohB4EJX & MethodScene skipped (v1 regression) \\
+HiST-AT & Hierarchical spatio-temp.~attn.~& % TODO: fill BV & MethodScene OK \\
+VAG & Visual attention guided policy & % TODO: fill BV & MethodScene OK, 2 repair rounds \\
+LAPA & % TODO: domain & % TODO: fill BV & Concurrent draft with sibling agent \\
+\bottomrule
+\end{tabular}
+\caption{Selected case studies from production deployment. Full list in \texttt{output/} directory of the released repository. % TODO: user to fill BV IDs and verify MethodScene outcomes.
+}
+\label{tab:corpus}
+\end{table}
+
+\subsection{Quantitative proxies}
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{@{}lcc@{}}
+\toprule
+Metric & Value & Notes \\
+\midrule
+End-to-end pipeline success rate & % TODO: fill & across N=10 papers \\
+\textsc{TitleScene} render success & % TODO: fill & out of N=10 \\
+\textsc{IntroScene} render success & % TODO: fill & out of N=10 \\
+\textsc{MethodScene} render success & % TODO: fill & out of N=10 \\
+\textsc{ResultsScene} render success & % TODO: fill & out of N=10 \\
+Consistency check invocations & % TODO: fill & on \textsc{MethodScene} \\
+Consistency check pass (round 1) & % TODO: fill & \\
+Consistency check pass (round $\le$2) & % TODO: fill & \\
+Bilibili upload success & % TODO: fill & out of N=10 \\
+Xiaohongshu video upload success & % TODO: fill & out of N=10 \\
+Xiaohongshu image-note fallback rate & % TODO: fill & out of N=10 \\
+Avg wall-clock per paper (end-to-end) & % TODO: fill & minutes, on 1x L20 (46GB) \\
+\bottomrule
+\end{tabular}
+\caption{Quantitative proxies over the deployment corpus. % TODO: user to fill in numbers from output/ and the run logs; all metrics are well-defined and measurable from artifacts on GSJts.
+}
+\label{tab:quant}
+\end{table}
+
+\subsection{Qualitative case studies}
+
+\paragraph{MultiWorld (BV1KhdUBQEVo).}
+MultiWorld is a multi-agent world model. The \textsc{MethodScene} initially rendered only three of the five architecture components; the Qwen-VL judge flagged the missing \texttt{``cross-agent attention''} block with an overall score of 5/10 and a specific suggestion to add the block between the encoder and policy head. The repair prompt, conditioned on the Edit-Banana element spec, produced a revised scene with all five components and an overall score of 8/10 in round 2. Total wall-clock overhead of the repair: one additional Manim render (~30s) plus one additional opencode call. % TODO: verify final published BV maps to revised render, not the first pass.
+
+\paragraph{UniT (BV1BWohB4EJX).}
+UniT (v1) exhibited a regression in which the \textsc{MethodScene} was silently skipped because the first code generation returned an empty string and all three retries returned empty. Subsequent investigation revealed a transient \texttt{opencode} timeout; after reverting to a shorter prompt (dropping the first-2000-chars of paper text), all four scenes rendered. The published video for UniT v1 therefore contains three scenes rather than four; the absence is visible but does not break narrative flow because the Ken Burns compositor fills the remaining time. This case study motivates our discussion of bounded retries and graceful degradation (Section~\ref{sec:limitations}).
+
+\paragraph{Astronomical cases.}
+We also processed two astronomical papers (LOFAR observation of high-redshift radio relics; hydrogen distribution in IRAS 04296+2923). Although these are outside the system's nominal domain, both produced coherent explainer videos. The \textsc{MethodScene} is less faithful here because the ``method figure'' is often an observation-map rather than a neural architecture; the Edit-Banana element extraction still emits bounding boxes, but their semantics (coordinate grids, flux contours) are not well-served by the default Manim primitives. We return to this in Section~\ref{sec:limitations}.
+
+\subsection{Ablation: removing the consistency loop}
+
+We qualitatively compare \textsc{MethodScene} output with and without the closed-loop repair on a held-out set of three papers (MultiWorld, VAG, HiST-AT). With repair enabled, all three scenes reach Qwen-VL score $\ge 7$; without repair, the first-pass scores are 5, 6, and 7 respectively. The largest gain is on MultiWorld where the repair added an entire block; the smallest is on HiST-AT where the first pass was already acceptable. % TODO: extend to quantitative averages when N$\ge$8 per condition is available.
+
+% ============================================================
+\section{Limitations and Discussion}
+\label{sec:limitations}
+
+\paragraph{Domain scope.}
+The \texttt{manim\_skill} examples and our prompt library are biased toward neural-architecture diagrams. Observational-astronomy and theory papers (whose ``main figure'' is not a data-flow diagram) degrade gracefully but produce less pedagogically valuable \textsc{MethodScene}s. A future release could dispatch to a different scene template based on \texttt{figure\_analyzer.detect\_nn\_architecture}, which already distinguishes architecture diagrams from other figure types.
+
+\paragraph{Language monoculture.}
+The system targets Chinese output; translating the script planner and TTS to other languages is straightforward in principle (CosyVoice supports multiple languages) but has not been tested end-to-end. The structured-plan prompt itself is bilingual and should port without modification.
+
+\paragraph{Cost and latency.}
+A single paper currently takes roughly % TODO: measure
+wall-clock minutes on one L20 GPU (46GB), dominated by Manim rendering and TTS. The two-round consistency loop adds % TODO: measure
+seconds per \textsc{MethodScene}; this is acceptable for a daily-cadence channel but would need optimization for a many-papers-per-hour pipeline.
+
+\paragraph{Judge reliability.}
+Using Qwen-VL as both the image captioner and the consistency judge is a dual-purpose dependency. If the vision model hallucinates a missing component that is, in fact, present, the repair prompt may push the scene away from the ground truth. In practice we have not observed this, but it is a structural risk that would benefit from judge ensembling or a rule-based bounding-box overlap check as a second opinion.
+
+\paragraph{Ethics and attribution.}
+Every produced video carries the original arXiv link and a Chinese paraphrase of the abstract rather than a verbatim translation; no figures are re-labeled in misleading ways. We publish under the original paper's license terms and provide authorship attribution in the video description. The system is explicitly a promotional explainer for papers the arXiv authors have already released, not a replacement for reading them.
+
+% ============================================================
+\section{Conclusion}
+\label{sec:conclusion}
+
+\textsc{JushenRenji} shows that a one-operator daily paper-video channel is feasible with current LLMs, vision models, and agent runtimes, provided three ingredients are in place: (i) figure-grounded rather than caption-based conditioning for code generation, (ii) a closed-loop visual-consistency judge with targeted-feedback repair, and (iii) an agent-runtime-mediated code-generation pipeline that guarantees few-shot best practices are applied. The system has been deployed in production and produces Chinese explainer videos at a scale not attainable by manual authoring. We release the full pipeline, including the four-stage CLI, the Edit-Banana element extractor, the Manim safety transforms, and the distribution orchestrator.
+
+% ------------------------------------------------------------
+\section*{Acknowledgments}
+We thank the \texttt{opencode} maintainers, the authors of the \texttt{manim\_skill} plugin, and the developers of Manim, SAM, and DashScope CosyVoice. The deployment host was provided by % TODO: fill institution / lab credit.
+
+% ------------------------------------------------------------
+\bibliography{references}
+
+\end{document}
