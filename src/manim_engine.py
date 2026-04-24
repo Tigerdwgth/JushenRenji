@@ -45,10 +45,12 @@ SAFE_FRAME_HEIGHT = 6.5       # 缩放目标高度
 class ManimEngine:
     """Manim 动画生成引擎（固定 4 场景结构）。"""
 
-    def __init__(self, paper_text, structured_plan=None, output_dir="./output/manim"):
+    def __init__(self, paper_text, structured_plan=None, output_dir="./output/manim",
+                 arxiv_id=None):
         self.paper_text = paper_text
         self.structured_plan = structured_plan or {}
         self.output_dir = output_dir
+        self.arxiv_id = arxiv_id
         self.temp_dir = os.path.join(output_dir, "temp")
         os.makedirs(self.output_dir, exist_ok=True)
         # 清空旧的临时文件，避免残留影响新 pipeline
@@ -858,7 +860,7 @@ class ManimEngine:
             logger.info("分析方法主图: %s", main_figure)
             try:
                 paper_ctx = self.paper_text[:1500] if self.paper_text else ""
-                figure_analysis_result = analyze_and_prepare(main_figure, paper_ctx)
+                figure_analysis_result = analyze_and_prepare(main_figure, paper_ctx, arxiv_id=self.arxiv_id)
                 if figure_analysis_result and figure_analysis_result.get("analysis"):
                     logger.info("方法图分析成功: 类型=%s, %d 组件, %d 连接",
                                figure_analysis_result.get("figure_type", "?"),

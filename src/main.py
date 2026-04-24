@@ -167,10 +167,12 @@ if __name__ == "__main__":
                     structured_plan = generate_structured_video_plan(paper_text)
 
             if structured_plan and paper_text:
+                _manim_aid = locals().get("arxiv_id") or None
                 engine = ManimEngine(
                     paper_text=paper_text,
                     structured_plan=structured_plan,
                     output_dir="./output/manim",
+                    arxiv_id=_manim_aid,
                 )
                 manim_path = engine.run(
                     tts=manim_tts,

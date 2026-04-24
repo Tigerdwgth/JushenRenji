@@ -8,6 +8,7 @@
 import os
 import json
 import base64
+import re
 import logging
 import yaml
 from typing import Optional
@@ -254,6 +255,73 @@ def analysis_to_manim_context(analysis: dict, has_precise_bbox: bool = False) ->
 
 # ============================================================
 # Edit Banana 集成：SAM3 精确元素分割
+
+# ============================================================
+# 模块级辅助函数（提升自 _elements_to_analysis 内部闭包，供 arxiv_source_analyzer 复用）
+# ============================================================
+
+def _hex_to_manim_color(hex_color):
+    """将 hex 颜色或 RGB 字符串映射到 Manim 语义色名。"""
+    if not hex_color:
+        return "blue"
+    hex_color = str(hex_color).lower().lstrip("#")
+    # 支持 rgb(r,g,b) 形式
+    m = re.match(r"rgb\((\d+),\s*(\d+),\s*(\d+)\)", hex_color)
+    if m:
+        r, g, b = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    elif len(hex_color) >= 6:
+        try:
+            r, g, b = int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16)
+        except ValueError:
+            return "blue"
+    else:
+        return "blue"
+    if r > 180 and g < 100 and b < 100:
+        return "red"
+    elif g > 180 and r < 100 and b < 100:
+        return "green"
+    elif b > 180 and r < 100 and g < 100:
+        return "blue"
+    elif r > 150 and g > 150 and b < 100:
+        return "yellow"
+    elif r > 180 and g > 100 and b < 80:
+        return "orange"
+    elif r > 100 and b > 100 and g < 80:
+        return "purple"
+    elif r > 150 and g > 150 and b > 150:
+        return "gray"
+    return "blue"
+
+
+def _bbox_to_position(bbox, canvas_w, canvas_h):
+    """将 bbox 转换为 9 向位置语义（left/center/right + top/bottom）。
+
+    bbox 可以是对象（有 x1/y1/x2/y2 属性）或 4-tuple/list [x1, y1, x2, y2]。
+    """
+    if hasattr(bbox, "x1"):
+        x1, y1, x2, y2 = bbox.x1, bbox.y1, bbox.x2, bbox.y2
+    else:
+        x1, y1, x2, y2 = bbox[0], bbox[1], bbox[2], bbox[3]
+    canvas_w = canvas_w or 1
+    canvas_h = canvas_h or 1
+    cx = (x1 + x2) / 2 / canvas_w
+    cy = (y1 + y2) / 2 / canvas_h
+    if cx < 0.33:
+        h = "left"
+    elif cx > 0.66:
+        h = "right"
+    else:
+        h = "center"
+    if cy < 0.33:
+        v = "top"
+    elif cy > 0.66:
+        v = "bottom"
+    else:
+        v = ""
+    return (v + "-" + h).strip("-") if v else h
+
+
+
 # ============================================================
 
 _EDIT_BANANA_ROOT = os.path.join(
@@ -366,51 +434,6 @@ def _elements_to_analysis(context) -> dict:
     connections = []
     canvas_w = context.canvas_width or 1
     canvas_h = context.canvas_height or 1
-
-    # Manim 颜色映射
-    def _hex_to_manim_color(hex_color):
-        if not hex_color:
-            return "blue"
-        hex_color = hex_color.lower().lstrip("#")
-        color_map = {
-            "ff": "red", "00ff": "green", "0000ff": "blue",
-            "ff00ff": "purple", "ffff00": "yellow", "ffa500": "orange",
-        }
-        # 简单映射：看主色调
-        if len(hex_color) >= 6:
-            r, g, b = int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16)
-            if r > 180 and g < 100 and b < 100:
-                return "red"
-            elif g > 180 and r < 100 and b < 100:
-                return "green"
-            elif b > 180 and r < 100 and g < 100:
-                return "blue"
-            elif r > 150 and g > 150 and b < 100:
-                return "yellow"
-            elif r > 180 and g > 100 and b < 80:
-                return "orange"
-            elif r > 100 and b > 100 and g < 80:
-                return "purple"
-            elif r > 150 and g > 150 and b > 150:
-                return "gray"
-        return "blue"
-
-    def _bbox_to_position(bbox, canvas_w, canvas_h):
-        cx = (bbox.x1 + bbox.x2) / 2 / canvas_w
-        cy = (bbox.y1 + bbox.y2) / 2 / canvas_h
-        if cx < 0.33:
-            h = "left"
-        elif cx > 0.66:
-            h = "right"
-        else:
-            h = "center"
-        if cy < 0.33:
-            v = "top"
-        elif cy > 0.66:
-            v = "bottom"
-        else:
-            v = ""
-        return (v + "-" + h).strip("-") if v else h
 
     # 形状映射
     type_shape_map = {
@@ -913,19 +936,25 @@ def extract_frame_from_video(video_path: str, time_sec: float = None) -> Optiona
 # ============================================================
 
 def analyze_and_prepare(image_path: str,
-                        paper_context: str = "") -> dict:
+                        paper_context: str = "",
+                        arxiv_id: Optional[str] = None) -> dict:
     """分析图片并准备 Manim 生成所需的全部上下文。
 
-    融合策略：
+    融合策略:
+    0. (arxiv_id 给定时) arxiv LaTeX 源码直读 front-door: 若成功, 结合 Qwen-VL 语义返回
     1. Qwen-VL 提供语义理解（组件名称、功能描述、核心创新、数据流）
     2. Edit Banana (SAM3) 提供精确空间信息（bbox、颜色、形状）
     3. 两者融合：用 Qwen-VL 的语义 + Edit Banana 的精确坐标
+
+    Args:
+        arxiv_id: 若给出且 JSR_DISABLE_LATEX_SOURCE != "1", 优先走 LaTeX 源码直读路径
 
     Returns:
         {
             "analysis": 融合后的分析 JSON,
             "manim_context": 可注入 prompt 的文本,
-            "figure_type": 图类型
+            "figure_type": 图类型,
+            "eb_manim_elements": (可选) 精确元素字符串
         }
     """
     result = {
@@ -933,6 +962,43 @@ def analyze_and_prepare(image_path: str,
         "manim_context": "",
         "figure_type": "unknown",
     }
+
+    # 0. arxiv LaTeX 源码直读 front-door
+    if arxiv_id and os.environ.get("JSR_DISABLE_LATEX_SOURCE") != "1":
+        try:
+            try:
+                from src.arxiv_source_analyzer import try_structured_figure
+                from src import arxiv_source_analyzer as _asa_mod
+            except ImportError:
+                from arxiv_source_analyzer import try_structured_figure  # type: ignore
+                import arxiv_source_analyzer as _asa_mod  # type: ignore
+
+            _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            latex_analysis = try_structured_figure(
+                arxiv_id=arxiv_id,
+                method_image_path=image_path,
+                cache_root=os.path.join(_project_root, "cache"),
+                paper_context=paper_context,
+            )
+            if latex_analysis:
+                vision = analyze_figure_with_vision_llm(image_path, paper_context) or {}
+                analysis = _merge_latex_and_vision(latex_analysis, vision)
+                result["analysis"] = analysis
+                result["figure_type"] = analysis.get("figure_type", "architecture")
+                result["manim_context"] = analysis_to_manim_context(
+                    analysis, has_precise_bbox=True
+                )
+                try:
+                    result["eb_manim_elements"] = _asa_mod.to_eb_elements(analysis)
+                except Exception as _e_eb:
+                    logger.warning("to_eb_elements 失败: %s", _e_eb)
+                logger.info("arxiv_latex front-door 命中 (%d 组件)",
+                            len(analysis.get("components", [])))
+                return result
+            else:
+                logger.info("arxiv_latex front-door 未命中, 回退 SAM3+VL")
+        except Exception as e:
+            logger.warning("arxiv_latex front-door 异常, 回退 SAM3+VL: %s", e)
 
     # 1. Qwen-VL 语义分析（必需）
     vision_analysis = analyze_figure_with_vision_llm(image_path, paper_context)
@@ -1000,4 +1066,64 @@ def _merge_analyses(vision: dict, eb: dict) -> dict:
         merged["eb_element_count"] = eb.get("element_count", 0)
         merged["canvas_size"] = eb.get("canvas_size", [0, 0])
 
+    return merged
+
+
+
+def _merge_latex_and_vision(latex: dict, vision: dict) -> dict:
+    """融合 LaTeX 精确分析与 Qwen-VL 语义分析。
+
+    策略: 以 latex 为基础（坐标/shape/bbox 精确）, 用 vision 补语义字段;
+    按 bbox 中心就近匹配, 用 vision.components 的 name/chinese_name/description
+    覆盖到 latex.components 上。
+    """
+    if not vision:
+        return latex
+    merged = dict(latex)
+
+    # 语义字段补齐
+    for k in ("figure_type", "key_innovation", "data_flow",
+              "animation_suggestion", "has_neural_network", "nn_layers"):
+        if not merged.get(k) and vision.get(k):
+            merged[k] = vision[k]
+
+    # components 就近匹配: 用 bbox 中心 vs 语义 position
+    v_comps = vision.get("components", []) or []
+    l_comps = merged.get("components", []) or []
+    if v_comps and l_comps:
+        # 简单策略: vision 按 position 字段分组, latex 按 bbox 中心分区
+        # 这里用 order-based 就近匹配 (两侧均按 x 坐标排序)
+        def _cx(c):
+            bb = c.get("bbox_normalized") or [0, 0, 1, 1]
+            return (bb[0] + bb[2]) / 2
+        l_sorted = sorted(range(len(l_comps)), key=lambda i: _cx(l_comps[i]))
+        v_sorted = list(range(len(v_comps)))  # vision 顺序保留 (LLM 通常按数据流顺序)
+        for slot, li in enumerate(l_sorted):
+            if slot < len(v_sorted):
+                vc = v_comps[v_sorted[slot]]
+                # 覆盖名称/描述, 保留 latex 的坐标/shape
+                for k in ("name", "chinese_name", "description"):
+                    if vc.get(k):
+                        l_comps[li][k] = vc[k]
+                # type/children 如果 latex 为空, 用 vision 的
+                if not l_comps[li].get("children") and vc.get("children"):
+                    l_comps[li]["children"] = vc["children"]
+    merged["components"] = l_comps
+
+    # connections 补描述 (按 from/to name 匹配)
+    v_conns = vision.get("connections", []) or []
+    l_conns = merged.get("connections", []) or []
+    if v_conns and l_conns:
+        for lc in l_conns:
+            for vc in v_conns:
+                if lc.get("from") == vc.get("from") and lc.get("to") == vc.get("to"):
+                    if not lc.get("description") and vc.get("description"):
+                        lc["description"] = vc["description"]
+                    if not lc.get("label") and vc.get("label"):
+                        lc["label"] = vc["label"]
+                    break
+    merged["connections"] = l_conns
+    merged["has_precise_bbox"] = True
+    merged.setdefault("source", latex.get("source", "arxiv_latex"))
+    merged["eb_element_count"] = len(l_comps)
     return merged

@@ -58,6 +58,16 @@
     - 双路结果融合后注入 architecture prompt，省去手工描述结构
     - 有精确 bbox 时，manim_context 仅输出语义（避免与精确坐标冲突）
 12. **--paper-link 精准入口**：传入 arxiv URL 直接获取论文元数据，跳过关键词搜索和日期过滤。
+13. **arxiv LaTeX 源码直读** (v3.2)：给定 arxiv_id 时优先从 arxiv e-print tarball 提取 TikZ/矢量图元做结构化分析。
+    - 模块 `src/arxiv_source_analyzer.py`：对外唯一入口 `try_structured_figure(arxiv_id, image_path, cache_root, paper_context)`
+    - 路径 A（TikZ）：展开 `\input/\include` + 用户宏 → 抽 `\begin{figure}` → `parse_tikz_structure` 解析 `\node`/`\draw`
+    - 路径 B（raster PDF）：tarball 已含 `.pdf` 图时，`pymupdf.get_drawings()` 抽矢量对象
+    - 路径 C（pdflatex 兜底）：仅有 `.tex` 时跑 `pdflatex` 重编译 → 按 figure label 定位页码 → pymupdf 抽矢量
+    - 多图时用 Qwen 按 caption 打分选主图；LaTeX 成功后仍跑 Qwen-VL 补语义字段（key_innovation/data_flow/animation_suggestion）
+    - 缓存在 `cache/arxiv_src/<aid>/`，含 `.manifest.json` +（可选）`.compiled.pdf`（不放 /tmp）
+    - Kill switch：设 `JSR_DISABLE_LATEX_SOURCE=1` 即回退到 SAM3+VL 路径
+    - 依赖：`pylatexenc`（>=2.10）、`pymupdf`、系统 `pdflatex`（可选，仅路径 C 需要）
+    - 透传入口：`ManimEngine(paper_text, structured_plan, arxiv_id=...)` 或在 `main.py --paper-link` 分支自动透传
 
 ## 使用说明
 
