@@ -154,55 +154,65 @@ add_language_suffix_to_prompts()
 
 # ---- Manim 动画生成相关 Prompts ----
 
-_MANIM_LAYOUT_RULES = (
-    "\n\n【布局铁律 — 必须严格遵守】:\n"
+_MANIM_COMMON_RULES = (
+    "\n\n【通用布局铁律 — 必须严格遵守】:\n"
     "1. Manim 默认画框：X 轴 [-7, 7]，Y 轴 [-3.5, 3.5]。所有元素必须严格在此范围内。\n"
     "   - 标题放在 y=3.0 附近（to_edge(UP, buff=0.5)）\n"
     "   - 主要内容放在 y=-1 到 y=2 之间\n"
     "   - 底部留白，最低不超过 y=-3.0\n"
-    "   - 每添加一个元素前，用 .get_bottom()[1] > -3.0 检查是否超出底部\n"
-    "2. 同一时刻屏幕上最多 5 个主要元素。超过时必须先 FadeOut 旧元素再展示新元素。\n"
+    "2. 同一时刻屏幕上最多 5 个主要元素。超过必须先 FadeOut 再展示新元素。\n"
     "3. 禁止使用 scale_to_fit_width/scale_to_fit_height（会导致字体被放大）。用合理的 font_size 控制大小。\n"
-    "4. 标题 font_size=28，正文 font_size=18-20，注释 font_size=14-16。公式 .scale(0.7-0.8)。禁止 scale_to_fit_width 超过 10。\n"
-    "5. 元素间距用 buff=0.3-0.5。垂直方向最多放 5 行内容（标题1行+内容4行）。\n"
-    "   - 如果内容超过 5 行，分组展示：先展示前3行，FadeOut 后再展示后3行\n"
+    "4. 标题 font_size=28，正文 font_size=18-20，注释 font_size=14-16。\n"
+    "5. 元素间距用 buff=0.3-0.5。垂直方向最多 5 行内容（标题1行+内容4行）。\n"
+    "   - 内容超过 5 行时分组：先展示前 3 行 FadeOut，再展示后 3 行\n"
     "   - VGroup.arrange(DOWN, buff=0.3) 后检查总高度不超过 6 单位\n"
     "6. 【时序铁律 — 给观众读的时间，禁止闪屏】：\n"
     "   - 每次 Write/FadeIn 文字后必须 self.wait(T)，T 按'每 6 个中文字 1 秒'估算，且不少于 2 秒\n"
     "     · 例：12 字贡献点 → self.wait(2)；20 字长句 → self.wait(3.5)\n"
     "   - FadeOut 和下一个 FadeIn 之间最少 self.wait(0.6)，禁止 < 0.5\n"
     "   - Write/FadeIn 的 run_time 最少 0.8 秒，复杂多元素用 run_time=1.2\n"
-    "   - 同一页内多个元素出场时，相邻 play() 之间至少 self.wait(0.5)，不要连续 play 不停顿\n"
-    "   - 禁止出现任何 self.wait(X) 其中 X < 0.5；想要短暂停顿就不要写 wait\n"
-    "7. 分步展示：每展示一组新内容前，FadeOut 上一组（标题可保留）。\n"
-    "   【文字与框的关系】当 Text 放在 Rectangle/RoundedRectangle 内时：\n"
-    "   - 先创建 Text，再根据 Text 大小创建 Rectangle（宽=text.width+0.4, 高=text.height+0.3）\n"
-    "   - 或者先创建 Rectangle，再用 text.scale_to_fit_width(rect.width*0.85) 缩放文字适配框\n"
-    "   - 禁止固定 Rectangle 尺寸后放入未缩放的多行 Text，这会导致文字溢出框外\n"
-    "8. 禁止一次性展示超过 3 行公式/文字，必须分步骤。\n"
-    "9. 中文文字不要指定 font 参数，让 Manim 使用系统默认字体。\n"
-    "10. 动画总时长不设上限，以'能让观众读完每页内容'为底线；宁可慢不要闪。\n"
-    "11. 【LaTeX 铁律】MathTex 禁止使用 substrings_to_isolate 参数，它会破坏括号匹配。\n"
-    "12. 【LaTeX 铁律】禁止使用 set_color_by_tex()。如需高亮，用多个 MathTex 拼接或用 SurroundingRectangle。\n"
-    "13. 【LaTeX 铁律】禁止使用 TransformMatchingTex。用 FadeOut + FadeIn 替代。\n"
-    "14. 【LaTeX 铁律】\\left 和 \\right 必须成对出现，不能被拆分到不同的 MathTex 参数中。\n"
-    "15. 【LaTeX 铁律】公式尽量写在一个完整字符串中，不要拆分成多个参数。\n"
-    "16. 【分页铁律】每个 Scene 必须分页展示！一页最多 3 个主要文字元素（不含标题）。\n"
-    "    页与页之间必须用 self.play(FadeOut(*当前页元素)) + self.wait(0.8) 清理。\n"
-    "    模板：\n"
-    "    page1 = VGroup(item1, item2, item3)\n"
-    "    self.play(FadeIn(page1), run_time=1.0)\n"
-    "    self.wait(3)           # 让观众读完\n"
-    "    self.play(FadeOut(page1))\n"
-    "    self.wait(0.8)         # 翻页缓冲\n"
-    "    page2 = VGroup(item4, item5)\n"
-    "    self.play(FadeIn(page2), run_time=1.0)\n"
-    "    self.wait(3)\n"
-    "17. 【禁止堆叠】绝对禁止超过 5 个文字对象同时出现在屏幕上！\n"
-    "    每次 FadeIn 新元素前检查当前屏幕元素数量，超过 3 个必须先 FadeOut。\n"
-    "18. 【长文本拆分】如果贡献点/解释超过 20 个中文字或 50 个英文字符，拆分为多行 Text，\n"
+    "   - 同一页内多个元素出场时，相邻 play() 之间至少 self.wait(0.5)\n"
+    "   - 禁止出现任何 self.wait(X) 其中 X < 0.5\n"
+    "7. 中文文字不要指定 font 参数，让 Manim 使用系统默认字体。\n"
+    "8. 动画总时长不设上限，以'能让观众读完每页内容'为底线；宁可慢不要闪。\n"
+    "9. 【分页铁律】每个 Scene 必须分页展示！一页最多 3 个主要文字元素（不含标题）。\n"
+    "   页与页之间必须 self.play(FadeOut(*当前页元素)) + self.wait(0.8) 清理。\n"
+    "   模板：\n"
+    "   page1 = VGroup(item1, item2, item3)\n"
+    "   self.play(FadeIn(page1), run_time=1.0)\n"
+    "   self.wait(3)           # 让观众读完\n"
+    "   self.play(FadeOut(page1))\n"
+    "   self.wait(0.8)         # 翻页缓冲\n"
+    "10. 【长文本拆分】贡献点/解释超过 20 个中文字或 50 个英文字符时拆分为多行 Text，\n"
     "    每行 font_size=18，用 VGroup.arrange(DOWN, buff=0.2) 排列，总高度不超过 3 单位。\n"
 )
+
+_MANIM_LATEX_RULES = (
+    "\n【LaTeX / MathTex 铁律】:\n"
+    "L1. 禁止一次性展示超过 3 行公式，必须分步骤；公式 .scale(0.7-0.8)。\n"
+    "L2. MathTex 禁止使用 substrings_to_isolate 参数，它会破坏括号匹配。\n"
+    "L3. 禁止使用 set_color_by_tex()。如需高亮，用多个 MathTex 拼接或用 SurroundingRectangle。\n"
+    "L4. 禁止使用 TransformMatchingTex。用 FadeOut + FadeIn 替代。\n"
+    "L5. \\left 和 \\right 必须成对出现，不能被拆分到不同 MathTex 参数中。\n"
+    "L6. 公式尽量写在一个完整字符串中，不要拆分成多个参数。\n"
+)
+
+_MANIM_ARCHITECTURE_RULES = (
+    "\n【架构图 / 流程图 专属铁律】:\n"
+    "A1. 【文字与框的关系】Text 与 Rectangle 不要用 VGroup().arrange(IN, ...) 叠放！\n"
+    "    正确写法：先创建 Text，再 rect = Rectangle(width=text.width+0.4, height=text.height+0.3)；\n"
+    "    然后 rect.move_to(target_pos), text.move_to(rect.get_center()); 最后 VGroup(rect, text).\n"
+    "    禁止 VGroup(rect, text).arrange(IN, buff=0) —— ManimCE 没有 IN 这个方向常量。\n"
+    "A2. arrange() 的方向参数只能是 UP / DOWN / LEFT / RIGHT / UR / UL / DR / DL / ORIGIN / RIGHT+DOWN 等\n"
+    "    Manim 标准方向向量；不要使用 IN / OUT / BACK / FORWARD 这些 3D 占位符。\n"
+    "A3. 收到精确元素坐标时（prompt 中带 eb_manim_elements 或类似数据），必须\n"
+    "    **直接用给定的 move_to([x, y, 0])**，禁止再 arrange()/next_to()/to_edge() 覆盖位置。\n"
+    "A4. 固定 Rectangle 尺寸后放入未缩放的多行 Text 会溢出；要么先创建 Text 再配 Rectangle，\n"
+    "    要么用 text.scale_to_fit_width(rect.width*0.85) 缩小文字适配框。\n"
+    "A5. 箭头用 Arrow(start, end, stroke_width=2, buff=0.15)；不同模块用不同颜色\n"
+    "    (BLUE/GREEN/YELLOW/RED/PURPLE) 帮助观众区分。\n"
+)
+
 
 prompts_dict["manim_analyze_script"] = (
     "你是一名学术动画专家。给定一篇论文的视频脚本（JSON 格式，含 opening/intro/method/results 段落）和论文原文，"
@@ -239,7 +249,7 @@ prompts_dict["manim_generate_formula"] = (
     "   - 第5步：FadeOut 所有元素\n"
     "4. 公式居中放置，注释放在公式下方\n"
     "5. 总共不超过 6 个 play() 调用\n"
-    + _MANIM_LAYOUT_RULES +
+    + _MANIM_COMMON_RULES + _MANIM_LATEX_RULES +
     "仅输出完整的 Python 代码，不要 markdown 代码块标记，不要解释文字。\n"
 )
 
@@ -259,7 +269,7 @@ prompts_dict["manim_generate_architecture"] = (
     "   - 最后 Indicate 高亮核心模块\n"
     "   - 总共不超过 10 个 play() 调用\n"
     "5. 所有模块位置必须手动计算，确保不重叠、不超框\n"
-    + _MANIM_LAYOUT_RULES +
+    + _MANIM_COMMON_RULES + _MANIM_ARCHITECTURE_RULES +
     "仅输出完整的 Python 代码，不要 markdown 代码块标记，不要解释文字。\n"
 )
 
@@ -278,7 +288,7 @@ prompts_dict["manim_generate_flow"] = (
     "   - 可选：用 Dot 沿路径移动表示数据流\n"
     "   - 总共不超过 10 个 play() 调用\n"
     "5. 整体布局用 VGroup 管理，用 .arrange() 或手动定位，确保不超框\n"
-    + _MANIM_LAYOUT_RULES +
+    + _MANIM_COMMON_RULES + _MANIM_ARCHITECTURE_RULES +
     "仅输出完整的 Python 代码，不要 markdown 代码块标记，不要解释文字。\n"
 )
 
@@ -297,7 +307,7 @@ prompts_dict["manim_generate_title"] = (
     "   - 总共不超过 8 个 play() 调用\n"
     "5. 所有文字居中排列，用 VGroup + arrange(DOWN, buff=0.5)\n"
     "6. 【语言要求】论文标题保留英文原文，其余所有文字（贡献点、注释等）必须使用中文。\n"
-    + _MANIM_LAYOUT_RULES +
+    + _MANIM_COMMON_RULES +
     "仅输出完整的 Python 代码，不要 markdown 代码块标记，不要解释文字。\n"
 )
 
@@ -317,7 +327,7 @@ prompts_dict["manim_generate_results"] = (
     "5. 最后保持内容在屏幕上，不要 FadeOut\n"
     "6. 数据必须从论文原文中提取真实数字，禁止编造\n"
     "7. 所有元素必须在 X[-7,7] Y[-4,4] 范围内，禁止使用 scale_to_fit_width。用合理的 font_size 和布局控制大小。\n"
-    + _MANIM_LAYOUT_RULES +
+    + _MANIM_COMMON_RULES +
     "仅输出完整的 Python 代码，不要 markdown 代码块标记，不要解释文字。\n"
 )
 
@@ -333,7 +343,7 @@ prompts_dict["manim_fix_code"] = (
     "   - AttributeError -> 检查 ManimCE API 版本\n"
     "   - 元素超出画框 -> 调整位置或缩放\n"
     "   - AnimationGroup 空动画 -> 添加条件检查\n"
-    + _MANIM_LAYOUT_RULES +
+    + _MANIM_COMMON_RULES + _MANIM_LATEX_RULES +
     "仅输出完整的修复后 Python 代码，不要解释。\n"
 )
 
@@ -353,43 +363,8 @@ prompts_dict["manim_generate_architecture_from_figure"] = (
     "5. 用 Qwen-VL 分析的语义名称给模块标注 Text\n"
     "6. 动画：按数据流方向逐组 FadeIn 模块 + GrowArrow 连接\n"
     "7. 核心创新模块用 SurroundingRectangle 高亮\n"
-    + _MANIM_LAYOUT_RULES +
+    + _MANIM_COMMON_RULES + _MANIM_ARCHITECTURE_RULES +
     "仅输出完整的 Python 代码，不要 markdown 代码块标记，不要解释文字。\n"
 )
 
 
-prompts_dict["manim_generate_method_with_manimml"] = (
-    "你是 ManimCE + ManimML 专家。请生成一个使用 ManimML 展示神经网络架构的 Manim Scene。\n\n"
-    "【重要】ManimML 与 ManimCE 0.19+ 的 make_forward_pass_animation() 不兼容，"
-    "所以必须使用 FadeIn(nn) 静态展示网络，然后用 Indicate 手动高亮各层。\n\n"
-    "代码模板：\n"
-    "```python\n"
-    "from manim import *\n"
-    "from manim_ml.neural_network import NeuralNetwork, FeedForwardLayer, Convolutional2DLayer\n\n"
-    "class SceneName(ThreeDScene):  # 必须继承 ThreeDScene\n"
-    "    def construct(self):\n"
-    "        nn = NeuralNetwork([\n"
-    "            # 根据分析结果填入层\n"
-    "            Convolutional2DLayer(num_feature_maps, feature_map_size, kernel_size),\n"
-    "            FeedForwardLayer(num_nodes),\n"
-    "        ], layer_spacing=0.3)\n"
-    "        nn.scale(0.6)\n"
-    "        nn.move_to(ORIGIN)\n"
-    "        title = Text(网络架构, font_size=28).to_edge(UP)\n"
-    "        self.play(Write(title))\n"
-    "        self.play(FadeIn(nn), run_time=2)\n"
-    "        self.wait(1)\n"
-    "        # 逐层高亮（不要用 make_forward_pass_animation）\n"
-    "        for layer in nn.all_layers:\n"
-    "            self.play(Indicate(layer, scale_factor=1.05, color=YELLOW), run_time=0.4)\n"
-    "        self.wait(2)\n"
-    "```\n\n"
-    "要求：\n"
-    "1. 必须继承 ThreeDScene\n"
-    "2. 禁止调用 make_forward_pass_animation()\n"
-    "3. 用 FadeIn 展示网络，Indicate 逐层高亮\n"
-    "4. 可以在网络旁边添加 Text 标注（模块名称、维度等）\n"
-    "5. nn.scale(0.5-0.7)，不要太大\n"
-    + _MANIM_LAYOUT_RULES +
-    "仅输出完整的 Python 代码，不要 markdown 代码块标记，不要解释文字。\n"
-)

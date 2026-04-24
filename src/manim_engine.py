@@ -341,10 +341,7 @@ class ManimEngine:
 
         # 选择 prompt
         if figure_analysis and scene_type == "architecture":
-            if figure_analysis.get("manimml_code"):
-                prompt_key = "manim_generate_method_with_manimml"
-            else:
-                prompt_key = "manim_generate_architecture_from_figure"
+            prompt_key = "manim_generate_architecture_from_figure"
         else:
             prompt_key = f"manim_generate_{scene_type}"
         prompt = prompts_dict.get(prompt_key, prompts_dict.get("manim_generate_formula", ""))
@@ -363,9 +360,6 @@ class ManimEngine:
             manim_ctx = figure_analysis.get("manim_context", "")
             if manim_ctx:
                 user_content += f"\n{manim_ctx}\n"
-            manimml_code = figure_analysis.get("manimml_code")
-            if manimml_code:
-                user_content += f"\n## ManimML 参考代码:\n{manimml_code}\n"
             # 注入 Edit Banana 精确元素数据（包含 Manim 坐标）
             eb_elements = figure_analysis.get("eb_manim_elements", "")
             if eb_elements:
@@ -377,7 +371,10 @@ class ManimEngine:
                        figure_analysis.get("figure_type", "unknown"),
                        len(figure_analysis.get("analysis", {}).get("components", [])))
 
-        user_content += f"\n论文原文参考（前2000字）:\n{self.paper_text[:2000]}\n"
+        if not figure_analysis:
+            # abstract+intro 的前 2000 字对 architecture scene 是噪声,
+            # 有 figure_analysis 时依赖它与 eb_manim_elements 即可
+            user_content += f"\n论文原文参考（前2000字）:\n{self.paper_text[:2000]}\n"
         user_content += "\n重要：生成的动画内容必须忠实于这篇论文的具体方法，不要用通用的示例。\n"
 
         full_prompt = prompt + "\n\n" + user_content
