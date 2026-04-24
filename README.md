@@ -21,6 +21,8 @@
 │   ├── utils
 │   │   └── audio_helpers.py  # TTS/音频安全处理
 │   ├── main.py
+│   ├── env_setup.py               # 网络配置 + arxiv 链接解析 + JSR_NETWORK_PROFILE
+│   ├── figure_analyzer.py         # SAM3(Edit Banana) + Qwen-VL 论文主图精确分析
 │   ├── website_video_pipeline.py  # 网页顶部视频转发（下载并双平台发布）
 │   ├── video_creator.py      # 视频合成（Ken Burns + 转场 + 字幕）
 │   ├── manim_engine.py       # Manim 动画演示引擎
@@ -44,12 +46,18 @@
 7. **图片智能筛选**：LLM 打分选取最重要的图片，Qwen-VL 生成图片讲解。
 8. **Demo 视频下载**：自动从论文项目主页提取并下载演示视频，嵌入最终视频开头。
 9. **网页视频转发**：从研究网页提取顶部主视频、封面和页面摘要，直接转发到 B站 与 小红书。
-10. **Manim 动画演示** (v3.0)：自动生成论文的 Manim 数学动画演示视频。
+10. **Manim 动画演示** (v3.1)：自动生成论文的 Manim 数学动画演示视频。
     - opencode + DeepSeek-R1 + manim_skill 最佳实践生成 ManimCE 代码
     - 固定 4 场景结构：标题→背景→方法→实验结果
     - TTS 讲解与 structured_plan 脚本同步
     - 动画后自动切换到论文图片，按 caption 智能匹配
     - 自动文本换行（中英文）+ 边界检查防超框
+11. **论文主图精确分析**：SAM3(Edit Banana) + Qwen-VL 双路联合分析，用于 MethodScene。
+    - Edit Banana 提取精确 bbox_normalized + 十六进制颜色 + 形状先验
+    - Qwen-VL-Max 输出语义 JSON（组件/连接/布局/数据流）
+    - 双路结果融合后注入 architecture prompt，省去手工描述结构
+    - 有精确 bbox 时，manim_context 仅输出语义（避免与精确坐标冲突）
+12. **--paper-link 精准入口**：传入 arxiv URL 直接获取论文元数据，跳过关键词搜索和日期过滤。
 
 ## 使用说明
 
@@ -212,6 +220,12 @@ python src/main.py --filename "{papername}" --manim --manim-quality high --platf
 
 # 控制视频时长（默认300秒=5分钟）
 python src/main.py --filename “{papername}” --target_duration 180 --platforms none
+
+# 通过 arxiv 链接直接生成 + 上传（推荐，绕过关键词搜索）
+JSR_NETWORK_PROFILE=gsjts python src/main.py \\
+    --paper-link https://arxiv.org/abs/2410.11758 \\
+    --manim --manim-tts --target_duration 300 \\
+    --platforms bilibili,xiaohongshu
 
 # 将研究网页顶部主视频直接转发到 B站 + 小红书
 python src/website_video_pipeline.py --url "https://www.pi.website/research/rlt"
