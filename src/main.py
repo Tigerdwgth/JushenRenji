@@ -33,6 +33,24 @@ def parse_args():
         type=str,
         help="The filename to process, e.g., 'cs.RO' for robotics papers. or a paper tile"
     )
+    parser.add_argument(
+        "--discover",
+        type=str,
+        default=None,
+        help="Auto-pick a paper for the given topic via opencode + heuristics. Mutually exclusive with --paper-link / --filename.",
+    )
+    parser.add_argument(
+        "--discover-sources",
+        type=str,
+        default="hf,arxiv",
+        help="Comma-separated discovery sources (default: hf,arxiv).",
+    )
+    parser.add_argument(
+        "--discover-profile",
+        type=str,
+        default=None,
+        help="Path to discovery profile yaml (default: config/discovery_profile.yaml).",
+    )
     #output length
     parser.add_argument(
         "--video_length",
@@ -109,8 +127,28 @@ if __name__ == "__main__":
 
     try:
         paper_link = getattr(args, "paper_link", None)
+        discover_topic = getattr(args, "discover", None)
+        if discover_topic and (paper_link or filename):
+            raise ValueError("--discover 与 --paper-link / --filename 互斥，请只传一个")
         today_dt = datetime.datetime.now()
         today = today_dt.strftime(r"%Y-%m-%d")
+        if discover_topic:
+            from src.paper_discovery import discover_top_paper, DiscoveryError
+            sources_raw = getattr(args, "discover_sources", "hf,arxiv") or "hf,arxiv"
+            sources = [s.strip() for s in sources_raw.split(",") if s.strip()]
+            try:
+                pick = discover_top_paper(
+                    topic=discover_topic,
+                    sources=sources,
+                    profile_path=getattr(args, "discover_profile", None),
+                )
+            except DiscoveryError as e:
+                raise RuntimeError("[discover] 选题失败: %s" % e)
+            paper_link = pick["url"]
+            args.paper_link = paper_link
+            logging.info("[discover] picked %s (score=%.2f, reason=%s) -> %s",
+                         pick["arxiv_id"], float(pick["score"]),
+                         (pick["reason"] or "")[:80], paper_link)
         if paper_link:
             arxiv_id = parse_arxiv_link(paper_link)
             meta = fetch_arxiv_by_id(arxiv_id)
@@ -119,7 +157,7 @@ if __name__ == "__main__":
             logging.info("[paper-link] id=%s title=%s date=%s", arxiv_id, filename[:80], yesterday)
         else:
             if not filename:
-                raise ValueError("必须给 --paper-link <url> 或 --filename <query>")
+                raise ValueError("必须给 --discover <topic> / --paper-link <url> / --filename <query> 之一")
             weekday = today_dt.weekday()
             delta_days = {0: 3, 6: 2, 5: 1}.get(weekday, 1)
             yesterday = (today_dt - datetime.timedelta(days=delta_days)).strftime(r"%Y-%m-%d")

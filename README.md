@@ -237,6 +237,22 @@ JSR_NETWORK_PROFILE=gsjts python src/main.py \\
     --manim --manim-tts --target_duration 300 \\
     --platforms bilibili,xiaohongshu
 
+# --discover 自动选题（HF Daily Papers + arxiv recent + opencode 排序）
+# 与 --paper-link / --filename 严格三选一互斥
+JSR_NETWORK_PROFILE=gsjts python src/main.py \
+    --discover "embodied AI" \
+    --discover-sources hf,arxiv \
+    --manim --manim-tts --target_duration 300 \
+    --platforms bilibili,xiaohongshu
+
+# --discover 跳过 opencode (kill switch, 走启发式)
+JSR_DISCOVERY_DISABLE_OPENCODE=1 JSR_NETWORK_PROFILE=gsjts python src/main.py \
+    --discover "VLA manipulation" --platforms none
+
+# 自定义选题偏好（默认 config/discovery_profile.yaml）
+python src/main.py --discover "world model" \
+    --discover-profile config/discovery_profile.yaml --platforms none
+
 # 将研究网页顶部主视频直接转发到 B站 + 小红书
 python src/website_video_pipeline.py --url "https://www.pi.website/research/rlt"
 

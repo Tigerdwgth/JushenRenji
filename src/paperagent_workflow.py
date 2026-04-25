@@ -725,6 +725,18 @@ def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().str
         if not os.path.exists(new_part_video_path):
             raise RuntimeError(f"单篇视频输出失败: {new_part_video_path}")
         logging.info(f"单篇视频已成功生成，路径为: {new_part_video_path}")
+        # 单篇成功 → 记录到 published_papers.json (供 --discover 去重)
+        try:
+            _aid = locals().get('arxiv_id') or None
+            if not _aid and paper_links:
+                from env_setup import parse_arxiv_link as _pal
+                try:
+                    _aid = _pal(paper_links[0])
+                except Exception:
+                    _aid = None
+            _record_published_safe(_aid, (cn_titles[0] if cn_titles else (origin_titles[0] if origin_titles else '')), new_part_video_path, date)
+        except Exception as _e:
+            logging.warning('[discovery-hook] single record failed: %s', _e)
         return new_part_video_path, origin_titles, cn_titles, summaries, paper_links, project_links
 
     # 合并所有论文的视频片段（至少一段）
@@ -759,3 +771,21 @@ def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().str
         raise RuntimeError(f"日报视频输出失败: {final_video_path}")
     logging.info(f"日报视频已成功生成，路径为: {final_video_path}")
     return final_video_path, origin_titles, cn_titles, summaries, paper_links, project_links
+
+
+# ---- discovery state hook (added by --discover feature) ----
+def _record_published_safe(arxiv_id, title, video_path, date_str=None):
+    """出片成功后调 paper_discovery._append_published；任何异常不阻断主流程。"""
+    if not arxiv_id:
+        return
+    try:
+        from src.paper_discovery import _append_published, _state_path
+        import datetime as _dt
+        _append_published(_state_path(), {
+            'arxiv_id': arxiv_id,
+            'title': title or '',
+            'date': (date_str or _dt.datetime.now().strftime('%Y-%m-%d')),
+            'video_path': video_path or '',
+        })
+    except Exception as _e:
+        logging.warning('[discovery-hook] append_published failed: %s', _e)

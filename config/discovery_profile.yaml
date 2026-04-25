@@ -1,0 +1,44 @@
+# JushenRenji 选题偏好配置（--discover 默认 profile）
+# 全部字段都被 src/paper_discovery._load_profile 读取；缺省值见该函数。
+
+topics:
+  - "embodied"
+  - "VLA"
+  - "imitation learning"
+  - "robot"
+  - "manipulation"
+  - "world model"
+
+# title 含其一直接排除（不区分大小写）
+exclude_keywords:
+  - "A Survey on"
+  - "A Survey of"
+  - "Benchmark for"
+  - "Benchmarking"
+  - "Evaluation of"
+
+# 硬过滤：无 github_repo 直接排除
+require_github: true
+
+weights:
+  topic_match: 3       # 命中 topic 词的次数 * 权重
+  recent_7d: 2         # submitted_date 在过去 7 天内
+  has_github: 2        # 有 github_repo
+  has_project_page: 2  # 有 project_page
+  upvotes_bonus: 0.1   # score += 0.1 * min(upvotes, 20)
+  author_boost: 1      # 任一作者命中 author_boost_list
+
+author_boost_list:
+  - "Pieter Abbeel"
+  - "Sergey Levine"
+  - "Chelsea Finn"
+  - "Jitendra Malik"
+
+# 启发式打分低于此阈值 → 触发 D1 fallback
+min_score: 3.0
+
+# 空字符串 → 读 config.yaml 里的 opencode_model
+opencode_model: ""
+
+# D1 fallback：候选全过滤掉时回退用的 arxiv tag
+fallback_arxiv_query: "cs.RO"
