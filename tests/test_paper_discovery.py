@@ -356,3 +356,114 @@ def test_opencode_disabled_via_env():
         out = _opencode_rank(cs, profile, topic="embodied",
                              opencode_model="deepseek/x")
     assert out is None
+
+
+# ---------------------------------------------------------------------
+# 16. topic 全词边界匹配（Bug 2c 修复）
+# ---------------------------------------------------------------------
+
+def test_topic_match_word_boundary():
+    """``topic="action"`` 应**不**误配 ``"Automation"``。"""
+    from src.paper_discovery import _topic_match_count
+    assert _topic_match_count("GUI Automation Framework", ["action"]) == 0
+    assert _topic_match_count("latent action policy learning", ["action"]) == 1
+    # 短语也走全词
+    assert _topic_match_count("a latent action model", ["latent action"]) == 1
+    assert _topic_match_count("latent_action model", ["latent action"]) == 0
+
+
+def test_topic_match_chinese_substring():
+    """中文 topic 走子串（无 \\b 边界）。"""
+    from src.paper_discovery import _topic_match_count
+    assert _topic_match_count("具身智能机器人", ["具身智能"]) == 1
+    assert _topic_match_count("纯英文文本", ["具身智能"]) == 0
+
+
+# ---------------------------------------------------------------------
+# 17. _prefilter 在用户 topic 非空时硬过滤
+# ---------------------------------------------------------------------
+
+def test_prefilter_user_topic_required():
+    """``topic="latent action"``，候选都不含 → 应全被过滤。"""
+    from src.paper_discovery import _prefilter, _load_profile, _default_profile_path
+    profile = _load_profile(_default_profile_path())
+    profile["require_github"] = False  # 隔离 github 因素
+    cs = [
+        _make_candidate(arxiv_id="1", title="GUI Automation Framework",
+                        abstract="some text", github_repo="https://x.com/a/b"),
+        _make_candidate(arxiv_id="2", title="Robot Manipulation",
+                        abstract="manip", github_repo="https://x.com/a/b"),
+    ]
+    out = _prefilter(cs, profile, topic="latent action")
+    assert out == []
+
+    # 加一篇真命中的，验证保留
+    cs.append(_make_candidate(arxiv_id="3",
+                              title="Latent Action Pretraining for Robots",
+                              abstract="lap pretraining",
+                              github_repo="https://x.com/a/b"))
+    out2 = _prefilter(cs, profile, topic="latent action")
+    assert len(out2) == 1
+    assert out2[0].arxiv_id == "3"
+
+
+# ---------------------------------------------------------------------
+# 18. fetch_arxiv_recent 带 topic kwarg → arxiv API URL 含 abs:%22topic%22
+# ---------------------------------------------------------------------
+
+def test_arxiv_recent_topic_kwarg_url_encoded(monkeypatch):
+    """直连 arxiv 路径下，URL 必含 ``abs:%22latent+action%22``。"""
+    from src.discovery_sources import arxiv_recent as ar
+
+    captured = {}
+
+    class _FakeFeed:
+        entries = []
+
+    def _fake_parse(url):
+        captured["url"] = url
+        return _FakeFeed()
+
+    # 强制直连 API 路径：让 mock-friendly 路径抛错
+    def _raise(*a, **kw):
+        raise RuntimeError("force direct API")
+
+    monkeypatch.setattr(ar, "get_latest_embodied_ai_papers", _raise)
+    # patch 模块内 import 出来的 feedparser.parse
+    import feedparser
+    monkeypatch.setattr(feedparser, "parse", _fake_parse)
+
+    out = ar.fetch_arxiv_recent(tags=["cs.RO", "cs.CV"], days=7, limit=10,
+                                 topic="latent action")
+    assert isinstance(out, list)
+    url = captured.get("url", "")
+    assert "search_query=" in url
+    # 短语 latent action → quote_plus("\"latent action\"") = %22latent+action%22
+    assert "abs:%22latent+action%22" in url, "actual URL: " + url
+    assert "cat:cs.RO" in url and "cat:cs.CV" in url
+
+
+def test_arxiv_recent_no_topic_backward_compat(monkeypatch):
+    """没传 topic → URL 仍是纯 cat 查询，不含 abs:。"""
+    from src.discovery_sources import arxiv_recent as ar
+
+    captured = {}
+
+    class _FakeFeed:
+        entries = []
+
+    def _fake_parse(url):
+        captured["url"] = url
+        return _FakeFeed()
+
+    def _raise(*a, **kw):
+        raise RuntimeError("force direct API")
+
+    monkeypatch.setattr(ar, "get_latest_embodied_ai_papers", _raise)
+    import feedparser
+    monkeypatch.setattr(feedparser, "parse", _fake_parse)
+
+    ar.fetch_arxiv_recent(tags=["cs.RO"], days=7, limit=10)
+    url = captured.get("url", "")
+    assert "search_query=cat:cs.RO" in url
+    assert "abs:" not in url

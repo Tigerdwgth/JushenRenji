@@ -28,6 +28,11 @@ import subprocess
 from dataclasses import dataclass, asdict
 from typing import Optional
 
+try:
+    from src.env_setup import apply_network_workarounds
+except ImportError:  # 直接以 src 为 sys.path[0] 时（CLI 调用）
+    from env_setup import apply_network_workarounds  # type: ignore
+
 logger = logging.getLogger(__name__)
 
 # =====================================================================
@@ -155,7 +160,13 @@ def _gather_candidates(topic: str, sources: list, profile: dict) -> list:
         all_candidates.extend(fetch_hf_daily(limit=30) or [])
     if "arxiv" in src_set:
         # 用 profile.fallback_arxiv_query 之外的更宽松默认 tags（cs.RO + cs.CV）
-        all_candidates.extend(fetch_arxiv_recent(tags=["cs.RO", "cs.CV"], days=7, limit=30) or [])
+        # 把 topic 透传给 arxiv API（拼到 abs: 字段，服务端硬过滤）。
+        all_candidates.extend(fetch_arxiv_recent(
+            tags=profile.get("arxiv_tags") or ["cs.RO", "cs.CV"],
+            days=int(profile.get("arxiv_days") or 7),
+            limit=30,
+            topic=topic,
+        ) or [])
 
     # 同 arxiv_id 去重（优先保留 hf，因为带 upvote/github 信息更全）
     seen = {}
@@ -176,10 +187,16 @@ def _gather_candidates(topic: str, sources: list, profile: dict) -> list:
 # 硬过滤
 # =====================================================================
 
-def _prefilter(candidates: list, profile: dict) -> list:
-    """硬过滤：require_github + exclude_keywords。"""
+def _prefilter(candidates: list, profile: dict,
+               topic: Optional[str] = None) -> list:
+    """硬过滤：require_github + exclude_keywords + 用户 topic 必命中。
+
+    当 ``topic`` 非空时，候选 title+abstract 必须 ``_topic_match_count >= 1``，
+    否则丢弃；这把 ``--discover "latent action"`` 真正变成硬过滤而非软打分。
+    """
     require_github = bool(profile.get("require_github", True))
     excludes = [str(s).lower() for s in (profile.get("exclude_keywords") or [])]
+    user_topic = (topic or "").strip()
     out = []
     for c in candidates:
         title_lc = (c.title or "").lower()
@@ -189,8 +206,15 @@ def _prefilter(candidates: list, profile: dict) -> list:
         if require_github and not (c.github_repo and str(c.github_repo).strip()):
             logger.debug("[discovery] filter excluded (no github): %s", c.title[:60])
             continue
+        if user_topic:
+            text_full = (c.title or "") + " " + (c.abstract or "")
+            if _topic_match_count(text_full, [user_topic]) == 0:
+                logger.debug("[discovery] filter excluded (user topic miss %r): %s",
+                             user_topic, c.title[:60])
+                continue
         out.append(c)
-    logger.info("[discovery] prefilter: %d -> %d", len(candidates), len(out))
+    logger.info("[discovery] prefilter: %d -> %d (topic=%r)",
+                len(candidates), len(out), user_topic or None)
     return out
 
 
@@ -255,25 +279,46 @@ def _dedupe_against_published(candidates: list, state_path: str) -> list:
 # 启发式打分
 # =====================================================================
 
+def _topic_match_count(text: str, topics: list) -> int:
+    """统计 ``topics`` 在 ``text`` 中的命中数。
+
+    - ASCII topic（如 ``"latent action"``）→ 用 ``\b`` 全词边界正则，
+      避免 ``"action"`` 误配 ``"Automation"``。
+    - 含非 ASCII 的 topic（如 ``"具身智能"``）→ 退回子串匹配（中文无空格边界）。
+    """
+    text_lc = (text or "").lower()
+    if not text_lc or not topics:
+        return 0
+    count = 0
+    for t in topics:
+        t_lc = str(t or "").lower().strip()
+        if not t_lc:
+            continue
+        if t_lc.isascii():
+            pattern = r"\b" + re.escape(t_lc) + r"\b"
+            if re.search(pattern, text_lc):
+                count += 1
+        else:
+            if t_lc in text_lc:
+                count += 1
+    return count
+
+
 def _heuristic_score(c: Candidate, profile: dict, topic: str) -> tuple:
     """返回 (score: float, reason: str)。"""
     weights = profile.get("weights") or {}
-    topics = [str(t).lower() for t in (profile.get("topics") or []) if t]
+    profile_topics = [str(t) for t in (profile.get("topics") or []) if t]
     boost_list = [str(a).lower() for a in (profile.get("author_boost_list") or []) if a]
     score = 0.0
     parts = []
 
-    # topic 命中
-    text_lc = ((c.title or "") + " " + (c.abstract or "")).lower()
-    if topic:
-        topic_lc = topic.lower().strip()
-        if topic_lc and topic_lc in text_lc:
+    # topic 命中（全词边界 + 中文子串）
+    text_full = (c.title or "") + " " + (c.abstract or "")
+    if topic and str(topic).strip():
+        if _topic_match_count(text_full, [topic]) > 0:
             score += float(weights.get("topic_match", 3))
             parts.append("user_topic")
-    hits = 0
-    for t in topics:
-        if t and t in text_lc:
-            hits += 1
+    hits = _topic_match_count(text_full, profile_topics)
     if hits:
         score += float(weights.get("topic_match", 3)) * min(hits, 3) / 3.0
         parts.append("topic_match*%d" % hits)
@@ -608,6 +653,12 @@ def discover_top_paper(
     Raises:
         DiscoveryError: 全失败（连 D1 fallback 都拿不到）
     """
+    # 0. 网络环境工作区配置（gsjts profile：clash proxy + IPv4-only），幂等。
+    try:
+        apply_network_workarounds()
+    except Exception as _e:  # noqa: BLE001
+        logger.warning("[discovery] apply_network_workarounds failed: %s", _e)
+
     if not topic or not str(topic).strip():
         raise DiscoveryError("topic 不能为空")
     sources = sources or ["hf", "arxiv"]
@@ -627,8 +678,8 @@ def discover_top_paper(
             "score": 0.0, "reason": "d1_fallback:empty_sources", "source": c.source,
         }
 
-    # 2. 硬过滤 + 去重
-    filtered = _prefilter(raw, profile)
+    # 2. 硬过滤 + 去重（用户 topic 也参与硬过滤）
+    filtered = _prefilter(raw, profile, topic=topic)
     filtered = _dedupe_against_published(filtered, state_path)
     if not filtered:
         c = _d1_fallback(profile, topic, state_path)
