@@ -42,3 +42,16 @@ opencode_model: ""
 
 # D1 fallback：候选全过滤掉时回退用的 arxiv tag
 fallback_arxiv_query: "cs.RO"
+
+# 可选：venues 数据源（启用后会从 arxiv co: 字段拉接收论文）
+# best-effort 模糊匹配 — 不同会议接收备注写法差异大，召回率有限。
+# 调用 src.discovery_sources.fetch_arxiv_by_venue(name, year, limit, accepted_only)
+# 字段：
+#   name           会议名（"RSS"/"NeurIPS"/"CoRL"/"ICLR"/"ICRA"/"CVPR"/"ICCV"/"ECCV"）
+#   year           4 位年份（如 2025）
+#   limit          可选，单次最多拉几条，默认 50
+#   accepted_only  可选，True 仅匹配接收类备注，False 同时含 submitted to，默认 True
+# venues:
+#   - {name: "RSS", year: 2025}
+#   - {name: "NeurIPS", year: 2025}
+#   - {name: "CoRL", year: 2025, limit: 100, accepted_only: true}

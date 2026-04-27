@@ -1,0 +1,35 @@
+{
+  "_comment": "Example output of: python -m src.discovery_sources.cli hf-daily --limit 2",
+  "command": "hf-daily",
+  "input": {
+    "limit": 2
+  },
+  "expected_output": {
+    "ok": true,
+    "count": 2,
+    "papers": [
+      {
+        "arxiv_id": "2604.20156",
+        "title": "Foo VLA Robot Manipulation",
+        "abstract": "A great paper showing ...",
+        "url": "https://arxiv.org/abs/2604.20156",
+        "submitted_date": "2026-04-22",
+        "upvotes": 42,
+        "github_repo": "https://github.com/foo/foo",
+        "project_page": "https://foo.example.com",
+        "source": "hf"
+      },
+      {
+        "arxiv_id": "2604.99999",
+        "title": "Bar Imitation Learning",
+        "abstract": "Another HF Daily paper ...",
+        "url": "https://arxiv.org/abs/2604.99999",
+        "submitted_date": "2026-04-23",
+        "upvotes": 17,
+        "github_repo": null,
+        "project_page": null,
+        "source": "hf"
+      }
+    ]
+  }
+}

@@ -253,6 +253,10 @@ JSR_DISCOVERY_DISABLE_OPENCODE=1 JSR_NETWORK_PROFILE=gsjts python src/main.py \
 python src/main.py --discover "world model" \
     --discover-profile config/discovery_profile.yaml --platforms none
 
+# --discover 启用 venues 数据源（profile 里 uncomment venues）
+# 例：从 RSS 2025 / NeurIPS 2025 接收论文中挑一篇做选题
+# 编辑 config/discovery_profile.yaml 解开 venues: 注释，再正常 --discover
+
 # 将研究网页顶部主视频直接转发到 B站 + 小红书
 python src/website_video_pipeline.py --url "https://www.pi.website/research/rlt"
 
@@ -287,6 +291,51 @@ python src/website_video_pipeline.py --url "https://www.pi.website/research/rlt"
 - 当前实现面向 Next.js 研究页，优先提取页面顶部主视频
 - 发布标题默认优先使用中文标题，原英文标题仍会保留在简介/正文中
 - 小红书视频发布仍受 MCP 限制，上传时可能忽略封面，需在 App 内手动设置
+
+---
+
+## opencode skill 集成 — paper-search
+
+仓库内置 `skills/paper-search/`，把 arxiv（按 topic / 按 venue+year）和 HuggingFace Daily Papers 三种搜索能力包装成 JSON-stdout 的 CLI，方便 opencode 在 `--discover`、`manim` 生成、未来其他流程里直接调。
+
+### 安装本地 skill（推荐，仓库级）
+
+```bash
+cd ~/Projects/VlogCutter/JushenRenji
+npx skills add ./skills/paper-search --yes
+```
+
+执行后 `npx skills` 会把 SKILL.md 同步到 `.agents/skills/paper-search/`，并为本地各 agent（含 opencode / claude code / codex / gemini cli / GitHub Copilot 等）创建 symlink。SKILL.md 改动后重新跑同一条命令即可同步。
+
+### 手动 fallback 安装
+
+如果 `npx skills` 不可用（无 Node 环境）或想直接给 opencode 用：
+
+```bash
+mkdir -p .opencode/skills/paper-search
+cp -r skills/paper-search/* .opencode/skills/paper-search/
+```
+
+### CLI 直接调用
+
+不通过 skill 也能直接跑 CLI（适合脚本 / CI）：
+
+```bash
+# 按 topic 搜 arxiv
+JSR_NETWORK_PROFILE=gsjts python -m src.discovery_sources.cli arxiv-search \
+    --query "diffusion policy" --days 14 --limit 20
+
+# 按会议 + 年份搜 arxiv 接收论文（best-effort 模糊匹配 co: 字段）
+JSR_NETWORK_PROFILE=gsjts python -m src.discovery_sources.cli arxiv-by-venue \
+    --venue RSS --year 2025 --limit 50
+
+# HF Daily Papers
+JSR_NETWORK_PROFILE=gsjts python -m src.discovery_sources.cli hf-daily --limit 20
+```
+
+输出统一 JSON 契约：`{"ok": bool, "count": int, "papers": [...]}`，错误时 `ok=false`、`error` 字段、exit code 1，stdout 仍是合法 JSON。
+
+注意：`arxiv-by-venue` 是 best-effort，arxiv `co:` 字段索引并不完全；详见 `skills/paper-search/SKILL.md`。
 
 ---
 

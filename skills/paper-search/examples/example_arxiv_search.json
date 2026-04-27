@@ -1,0 +1,38 @@
+{
+  "_comment": "Example output of: python -m src.discovery_sources.cli arxiv-search --query 'diffusion policy' --days 14 --limit 2",
+  "command": "arxiv-search",
+  "input": {
+    "query": "diffusion policy",
+    "days": 14,
+    "limit": 2,
+    "categories": "cs.RO,cs.CV"
+  },
+  "expected_output": {
+    "ok": true,
+    "count": 2,
+    "papers": [
+      {
+        "arxiv_id": "2603.12345",
+        "title": "Sample Diffusion Policy for Manipulation",
+        "abstract": "We present a diffusion-based policy ...",
+        "url": "https://arxiv.org/abs/2603.12345",
+        "submitted_date": "2026-04-20",
+        "upvotes": 0,
+        "github_repo": null,
+        "project_page": null,
+        "source": "arxiv"
+      },
+      {
+        "arxiv_id": "2603.67890",
+        "title": "Another Diffusion Policy Approach",
+        "abstract": "Building on Diffusion Policy ...",
+        "url": "https://arxiv.org/abs/2603.67890",
+        "submitted_date": "2026-04-18",
+        "upvotes": 0,
+        "github_repo": null,
+        "project_page": null,
+        "source": "arxiv"
+      }
+    ]
+  }
+}

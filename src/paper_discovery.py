@@ -150,8 +150,17 @@ def _resolve_opencode_model(profile: dict) -> str:
 # =====================================================================
 
 def _gather_candidates(topic: str, sources: list, profile: dict) -> list:
-    """根据 sources 列表拉对应数据源，统一返回 list[Candidate]。"""
-    from src.discovery_sources import fetch_hf_daily, fetch_arxiv_recent
+    """根据 sources 列表拉对应数据源，统一返回 list[Candidate]。
+
+    profile 里有 ``venues: [{name, year, ...}]`` 时会调
+    :func:`fetch_arxiv_by_venue`（best-effort 模糊匹配）补充候选池，
+    无论 sources 列表里是否声明 ``"arxiv"``。venues 列表为空 / 缺失时跳过。
+    """
+    from src.discovery_sources import (
+        fetch_hf_daily,
+        fetch_arxiv_recent,
+        fetch_arxiv_by_venue,
+    )
 
     all_candidates = []
     src_set = {s.strip().lower() for s in (sources or []) if s and s.strip()}
@@ -168,18 +177,46 @@ def _gather_candidates(topic: str, sources: list, profile: dict) -> list:
             topic=topic,
         ) or [])
 
+    # venues 数据源：profile 配置触发，与 sources 列表无关
+    venues = profile.get("venues") or []
+    for v in venues:
+        if not isinstance(v, dict):
+            logger.warning("[discovery] venues entry not dict, skip: %r", v)
+            continue
+        v_name = (v.get("name") or "").strip()
+        v_year = v.get("year")
+        if not v_name or v_year is None:
+            logger.warning(
+                "[discovery] venues entry missing name/year, skip: %r", v)
+            continue
+        try:
+            venue_cands = fetch_arxiv_by_venue(
+                venue=v_name,
+                year=int(v_year),
+                limit=int(v.get("limit") or 50),
+                accepted_only=bool(v.get("accepted_only", True)),
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "[discovery] fetch_arxiv_by_venue(%s, %s) failed: %s",
+                v_name, v_year, e)
+            continue
+        all_candidates.extend(venue_cands or [])
+
     # 同 arxiv_id 去重（优先保留 hf，因为带 upvote/github 信息更全）
     seen = {}
     for c in all_candidates:
         if c.arxiv_id not in seen:
             seen[c.arxiv_id] = c
         else:
-            # 若已存在 arxiv 源、新来 hf，则覆盖
-            if seen[c.arxiv_id].source == "arxiv" and c.source == "hf":
+            # 若已存在 arxiv* 源、新来 hf，则覆盖
+            if (seen[c.arxiv_id].source.startswith("arxiv")
+                    and c.source == "hf"):
                 seen[c.arxiv_id] = c
     deduped = list(seen.values())
-    logger.info("[discovery] gathered %d unique candidates from %s",
-                len(deduped), sorted(src_set))
+    logger.info(
+        "[discovery] gathered %d unique candidates from %s (+%d venues)",
+        len(deduped), sorted(src_set), len(venues))
     return deduped
 
 

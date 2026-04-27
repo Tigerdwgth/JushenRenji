@@ -1,0 +1,49 @@
+{
+  "_comment": "Example output of: python -m src.discovery_sources.cli arxiv-by-venue --venue RSS --year 2025 --limit 3 — recall is best-effort.",
+  "command": "arxiv-by-venue",
+  "input": {
+    "venue": "RSS",
+    "year": 2025,
+    "limit": 3,
+    "include_submitted": false
+  },
+  "expected_output": {
+    "ok": true,
+    "count": 3,
+    "papers": [
+      {
+        "arxiv_id": "2410.24164",
+        "title": "$π_0$: A Vision-Language-Action Flow Model for General Robot Control",
+        "abstract": "Robot learning holds tremendous promise ...",
+        "url": "https://arxiv.org/abs/2410.24164",
+        "submitted_date": "2026-01-08",
+        "upvotes": 0,
+        "github_repo": null,
+        "project_page": null,
+        "source": "arxiv_venue"
+      },
+      {
+        "arxiv_id": "2505.06111",
+        "title": "UniVLA: Learning to Act Anywhere with Task-centric Latent Actions",
+        "abstract": "A generalist robot should perform effectively across various environments ...",
+        "url": "https://arxiv.org/abs/2505.06111",
+        "submitted_date": "2025-11-03",
+        "upvotes": 0,
+        "github_repo": null,
+        "project_page": null,
+        "source": "arxiv_venue"
+      },
+      {
+        "arxiv_id": "2506.18812",
+        "title": "Learning Physical Systems: Symplectification via Gauge Fixing in Dirac Structures",
+        "abstract": "Physics-informed deep learning ...",
+        "url": "https://arxiv.org/abs/2506.18812",
+        "submitted_date": "2026-03-05",
+        "upvotes": 0,
+        "github_repo": null,
+        "project_page": null,
+        "source": "arxiv_venue"
+      }
+    ]
+  }
+}
