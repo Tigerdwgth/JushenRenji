@@ -256,6 +256,8 @@ class ManimEngine:
         with open(wrapper_script, "w") as wf:
             wf.write("#!/bin/bash\n")
             wf.write("export PATH=/usr/local/bin:$PATH\n")
+            # CWD_ISOLATION_PATCH: cd 到 temp_dir，让 opencode 看不到项目根的历史 .py 产物
+            wf.write(f'cd "{os.path.abspath(self.temp_dir)}"\n')
             # 用变量读取 prompt，避免 $(cat) 在命令行展开时卡死
             wf.write(f'PROMPT_FILE="{prompt_file}"\n')
             wf.write('PROMPT=$(cat "$PROMPT_FILE")\n')
@@ -263,9 +265,10 @@ class ManimEngine:
         os.chmod(wrapper_script, 0o755)
         cmd = f'bash {wrapper_script}' 
         try:
+            # CWD_ISOLATION_PATCH: cwd 改到 temp_dir，避免 opencode 误读项目根 .py 产物
             result = subprocess.run(
                 cmd, shell=True, capture_output=True, text=True,
-                env=env, cwd=project_root
+                env=env, cwd=os.path.abspath(self.temp_dir)
             )
             output = result.stdout
             if not output:
