@@ -36,6 +36,11 @@ TESSDATA_PREFIX = _config.get("tessdata_prefix", "/home/jdh/Projects/VlogCutter/
 # Language Settings
 OUTPUT_LANGUAGE = _config.get("output_language", "zh")
 
+# TTS (DashScope CosyVoice) - 环境变量 > YAML > 默认 v2
+# JSR_TTS_MODEL=cosyvoice-v1 + JSR_TTS_VOICE=longxiaochun 可一键回退老模型
+TTS_MODEL = os.getenv("JSR_TTS_MODEL") or _config.get("tts_model") or "cosyvoice-v2"
+TTS_VOICE = os.getenv("JSR_TTS_VOICE") or _config.get("tts_voice") or "longxiaochun_v2"
+
 # 兼容旧版本的 API_KEYS 字典
 API_KEYS = {
     "openai": os.getenv("OPENAI_API_KEY"),

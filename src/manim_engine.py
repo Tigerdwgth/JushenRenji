@@ -562,11 +562,18 @@ class ManimEngine:
         try:
             import dashscope
             from dashscope.audio.tts_v2 import SpeechSynthesizer
+            try:
+                from src.utils.audio_helpers import get_tts_config
+            except ImportError:
+                from utils.audio_helpers import get_tts_config  # type: ignore
 
             config = self._get_config()
             ds_key = config.get("dashscope_api_key", "")
             if ds_key:
                 dashscope.api_key = ds_key
+
+            tts_model, tts_voice = get_tts_config()
+            logger.info("Manim TTS 配置 model=%s voice=%s", tts_model, tts_voice)
 
             audio_parts = []
             for i, text in enumerate(narrations):
@@ -574,7 +581,7 @@ class ManimEngine:
                     continue
 
                 audio_path = os.path.join(self.temp_dir, f"tts_{i}.mp3")
-                synthesizer = SpeechSynthesizer(model="cosyvoice-v1", voice="longxiaochun")
+                synthesizer = SpeechSynthesizer(model=tts_model, voice=tts_voice)
                 audio_data = synthesizer.call(text)
 
                 if audio_data:

@@ -38,7 +38,8 @@ try:
         safe_concatenate_audio,
         create_silent_audio,
         AudioResourceManager,
-        audio_logger
+        audio_logger,
+        get_tts_config,
     )
 except ImportError:
     # 如果src不在路径中，尝试直接导入
@@ -49,7 +50,8 @@ except ImportError:
             safe_concatenate_audio,
             create_silent_audio,
             AudioResourceManager,
-            audio_logger
+            audio_logger,
+            get_tts_config,
         )
     except ImportError:
         # 如果都失败，使用本地实现
@@ -70,7 +72,8 @@ def test_audio_generation(text, idx):
     """测试音频生成是否正常"""
     logging.info(f"测试音频生成 {idx}: {text[:30]}...")
 
-    ss = SpeechSynthesizer(model="cosyvoice-v1", voice="longxiaochun")
+    _model, _voice = get_tts_config()
+    ss = SpeechSynthesizer(model=_model, voice=_voice)
     data = ss.call(text=text)
 
     if not data:
@@ -580,8 +583,9 @@ class VideoCreator:
         from concurrent.futures import ThreadPoolExecutor, as_completed
         import time as _time
 
-        tts_model = "cosyvoice-v1"
-        tts_voice = "longxiaochun"
+        # 默认 cosyvoice-v2 / longxiaochun_v2; env JSR_TTS_MODEL=cosyvoice-v1 + JSR_TTS_VOICE=longxiaochun 一键回退
+        tts_model, tts_voice = get_tts_config()
+        audio_logger.info(f"TTS 配置 model={tts_model} voice={tts_voice}")
         TTS_MAX_WORKERS = max(1, int(os.getenv("TTS_MAX_WORKERS", "2")))
         TTS_SERIAL_RETRY_ATTEMPTS = max(0, int(os.getenv("TTS_SERIAL_RETRY_ATTEMPTS", "3")))
 

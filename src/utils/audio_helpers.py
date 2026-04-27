@@ -12,6 +12,38 @@ from moviepy import AudioFileClip, concatenate_audioclips
 from moviepy.audio.AudioClip import AudioArrayClip
 import numpy as np
 
+
+def get_tts_config() -> Tuple[str, str]:
+    """统一的 TTS 模型/音色解析。
+
+    优先级: 环境变量 (JSR_TTS_MODEL / JSR_TTS_VOICE)
+            > src.config (TTS_MODEL / TTS_VOICE)
+            > 默认 cosyvoice-v2 / longxiaochun_v2
+
+    Returns:
+        (model, voice) 元组，例如 ("cosyvoice-v2", "longxiaochun_v2")。
+    """
+    env_model = os.getenv("JSR_TTS_MODEL")
+    env_voice = os.getenv("JSR_TTS_VOICE")
+    if env_model and env_voice:
+        return env_model, env_voice
+
+    cfg_model = None
+    cfg_voice = None
+    try:  # 软依赖: 测试场景下 src.config 可能未加载
+        try:
+            from src.config import TTS_MODEL as _M, TTS_VOICE as _V  # type: ignore
+        except ImportError:
+            from config import TTS_MODEL as _M, TTS_VOICE as _V  # type: ignore
+        cfg_model, cfg_voice = _M, _V
+    except Exception:
+        pass
+
+    model = env_model or cfg_model or "cosyvoice-v2"
+    voice = env_voice or cfg_voice or "longxiaochun_v2"
+    return model, voice
+
+
 # 配置专用音频日志记录器
 audio_logger = logging.getLogger('audio_processing')
 audio_logger.setLevel(logging.DEBUG)
