@@ -435,6 +435,56 @@ JSR_USE_SKILL_FIGURE=1 JSR_NETWORK_PROFILE=gsjts python src/main.py \
 
 ---
 
+### 图片重要性打分 (image-rating skill 路径)
+
+仓库内置 `skills/image-rating/`，把 `llm_tools.llm_agent.rate_image_importance` 的"图片批量打分"步骤包装成 JSON-stdout CLI，内部用 **opencode 多轮决策** 替代原 LLM 单次问到底：
+
+1. Round 1：基于 caption / figure_role / paper_context 给每张图初步打 0-10 分
+2. Round 2：自检——视觉化效果差吗？跟其他高分图重复吗？caption 是否对应核心贡献？
+3. Round 3：最终分数 + 推荐放在哪一段（opening / intro / method / results / none） + 一句话理由
+
+LESSONS 2026-04-15 Bug1 记过——某次公式图被 LLM 给到 0.92 高分，导致视频里出现长时间公式截图。本 skill 在 prompt 里写明"公式 / 约束 / 损失函数 / 定理截图 ≤ 3 分，section=none"，且在 CLI 代码层 `_enforce_formula_constraint` **再 enforce 一遍**作为双重保险。
+
+**默认行为不变**：`rate_image_importance(captions)` 仍走原 LLM 单次。设 `JSR_USE_SKILL_RATE_IMAGES=1` 后，函数会优先 subprocess 调本 skill；skill 失败时自动 fallback 回原 LLM 单次。返回值始终是 `list[int]`（legacy API 兼容）。
+
+#### 安装本地 skill
+
+```bash
+cd ~/Projects/VlogCutter/JushenRenji
+npx skills add ./skills/image-rating --yes
+```
+
+#### CLI 直接调用
+
+```bash
+cat > /tmp/cands.json <<'EOF'
+[
+  {"image_index": 0, "caption": "Figure 1: Overall architecture", "figure_role": "method", "paper_context": "ViTacFormer"},
+  {"image_index": 1, "caption": "Equation 3: Loss function", "figure_role": "method", "paper_context": "ViTacFormer"},
+  {"image_index": 2, "caption": "Figure 4: Quantitative comparison", "figure_role": "results", "paper_context": "ViTacFormer"}
+]
+EOF
+
+JSR_NETWORK_PROFILE=gsjts python -m src.llm_tools.cli rate-images \
+    --candidates /tmp/cands.json \
+    --target-count 3 \
+    --out /tmp/scores.json
+```
+
+输出 stdout：`{"ok": true, "scored": 3, "above_5": 2}`，`/tmp/scores.json` 内每张图含 `image_index / score / reason / recommended_section / rejected` 字段。idx=1 公式图会被自动拉到 ≤ 3 分 + section=none。
+
+#### 在 paper2video 流程中启用 skill 路径
+
+```bash
+JSR_USE_SKILL_RATE_IMAGES=1 JSR_NETWORK_PROFILE=gsjts python src/main.py \
+    --paper-link https://arxiv.org/abs/2506.15953 \
+    --target-duration 300
+```
+
+`paperagent_workflow.py` 调用 `rate_image_importance(captions)` 时，环境变量触发后会 subprocess 调 `python -m src.llm_tools.cli rate-images`，得到的多轮决策结果转成 legacy `list[int]` 返回，下游 `select_top_images` 完全无感。详见 `skills/image-rating/SKILL.md`。
+
+---
+
 ## 运行测试
 
 ```bash

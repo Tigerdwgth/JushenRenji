@@ -1,0 +1,32 @@
+[
+  {
+    "image_index": 0,
+    "caption": "Figure 1: Overall architecture of ViTacFormer with cross-modal fusion between visual and tactile encoders, predicting future tactile latents to drive the action decoder.",
+    "figure_role": "method",
+    "paper_context": "ViTacFormer: a cross-modal transformer for visuo-tactile manipulation. Joint encoding of RGB and tactile signals."
+  },
+  {
+    "image_index": 1,
+    "caption": "Equation 3: Cross-attention loss function L_attn = sum_i (q_i K^T) / sqrt(d) used to align visual and tactile tokens.",
+    "figure_role": "method",
+    "paper_context": "ViTacFormer: cross-modal transformer..."
+  },
+  {
+    "image_index": 2,
+    "caption": "Figure 4: Quantitative comparison on dexterous manipulation benchmarks. ViTacFormer achieves 87% success rate, outperforming baselines (RGB-only 64%, Tactile-only 71%) by 16-23 points.",
+    "figure_role": "results",
+    "paper_context": "ViTacFormer: cross-modal transformer..."
+  },
+  {
+    "image_index": 3,
+    "caption": "Figure 5: Ablation on number of tactile tokens (4 / 8 / 16 / 32). Performance saturates around 16 tokens.",
+    "figure_role": "ablation",
+    "paper_context": "ViTacFormer: cross-modal transformer..."
+  },
+  {
+    "image_index": 4,
+    "caption": "Figure 2: Real-world hardware setup, showing 3-finger gripper with GelSight tactile sensors and a wrist-mounted RGB camera.",
+    "figure_role": "intro",
+    "paper_context": "ViTacFormer: cross-modal transformer..."
+  }
+]

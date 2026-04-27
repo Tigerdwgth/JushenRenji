@@ -477,11 +477,114 @@ def add_context_to_image_explanations(image_explanations):
     return image_explanations
 
 
-def rate_image_importance(captions: list) -> list:
+def _call_image_rating_skill(captions: list, target_count: int = 8,
+                              timeout_sec: int = 300):
+    """以 subprocess 模式调 ``python -m src.llm_tools.cli rate-images``。
+
+    返回与 captions 等长的 score 列表 (int/float, 0-10);失败返回空列表。
+    永不抛异常 → 上层 ``rate_image_importance`` 自行 fallback。
+
+    输入 captions 是 list[str](legacy API),内部包装成 image-rating skill 的
+    candidates schema (image_index / caption / figure_role / paper_context)。
+    """
+    import subprocess as _sp
+    import tempfile
+    import shutil as _shutil
+
+    if not captions:
+        return []
+
+    project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    cache_root = os.path.join(project_root, "cache")
+    if not os.path.isdir(cache_root):
+        cache_root = None
+
+    tmp_dir = tempfile.mkdtemp(prefix="image_rating_", dir=cache_root)
+    cand_path = os.path.join(tmp_dir, "candidates.json")
+    out_path = os.path.join(tmp_dir, "scores.json")
+
+    try:
+        # legacy captions 包装成 candidates schema
+        candidates = []
+        for i, c in enumerate(captions):
+            candidates.append({
+                "image_index": i,
+                "caption": str(c or ""),
+                "figure_role": "",
+                "paper_context": "",
+            })
+        try:
+            with open(cand_path, "w", encoding="utf-8") as f:
+                json.dump(candidates, f, ensure_ascii=False, indent=2)
+        except Exception as e:  # noqa: BLE001
+            logging.warning("[via_skill_rate] 写 candidates 失败: %s", e)
+            return []
+
+        env = os.environ.copy()
+        env["PYTHONPATH"] = project_root + os.pathsep + env.get("PYTHONPATH", "")
+
+        cmd = [
+            sys.executable, "-m", "src.llm_tools.cli", "rate-images",
+            "--candidates", cand_path,
+            "--out", out_path,
+            "--target-count", str(int(target_count or 8)),
+        ]
+        try:
+            r = _sp.run(cmd, capture_output=True, text=True,
+                        timeout=timeout_sec, env=env, cwd=project_root)
+        except _sp.TimeoutExpired:
+            logging.warning("[via_skill_rate] CLI subprocess timeout after %ds", timeout_sec)
+            return []
+        except FileNotFoundError as e:
+            logging.warning("[via_skill_rate] python binary not found: %s", e)
+            return []
+        if r.returncode != 0:
+            logging.warning("[via_skill_rate] CLI rc=%d stderr=%s", r.returncode,
+                            (r.stderr or "")[-500:])
+        if not os.path.isfile(out_path):
+            logging.warning("[via_skill_rate] scores output file not produced")
+            return []
+        try:
+            with open(out_path, "r", encoding="utf-8") as f:
+                raw_scores = json.load(f)
+        except Exception as e:  # noqa: BLE001
+            logging.warning("[via_skill_rate] scores parse failed: %s", e)
+            return []
+        if not isinstance(raw_scores, list) or len(raw_scores) != len(captions):
+            logging.warning("[via_skill_rate] scores 长度不匹配(%d vs %d)",
+                            len(raw_scores) if isinstance(raw_scores, list) else -1,
+                            len(captions))
+            return []
+        # 提取纯 numeric 列表(legacy API 兼容)
+        out_scores = []
+        for r_rec in raw_scores:
+            if not isinstance(r_rec, dict):
+                out_scores.append(5)
+                continue
+            try:
+                s = float(r_rec.get("score", 5))
+            except Exception:
+                s = 5.0
+            s = max(0.0, min(10.0, s))
+            out_scores.append(int(round(s)))
+        return out_scores
+    finally:
+        try:
+            _shutil.rmtree(tmp_dir, ignore_errors=True)
+        except Exception:
+            pass
+
+
+def rate_image_importance(captions: list, via_skill: bool = False,
+                           target_count: int = 8) -> list:
     """对一组图片的题注/描述进行重要性打分。
 
     Args:
         captions: 图片描述列表
+        via_skill: True 或环境变量 ``JSR_USE_SKILL_RATE_IMAGES=1`` 时,
+                   走 subprocess 调 image-rating skill;失败 fallback 到原 LLM 单次。
+                   默认 False(不变,走原路径)。
+        target_count: 期望保留张数(只在 skill 路径用,默认 8)
 
     Returns:
         list[int]: 每张图片的重要性分数（1-10）
@@ -489,8 +592,20 @@ def rate_image_importance(captions: list) -> list:
     if not captions:
         return []
 
+    use_skill = bool(via_skill) or os.environ.get("JSR_USE_SKILL_RATE_IMAGES", "").strip() in ("1", "true", "True")
+    if use_skill:
+        try:
+            scores = _call_image_rating_skill(captions, target_count=target_count)
+            if scores and len(scores) == len(captions):
+                logging.info("[via_skill] image-rating skill succeeded")
+                return scores
+            logging.warning("[via_skill] image-rating skill returned empty/mismatch, fallback to plain LLM")
+        except Exception as e:  # noqa: BLE001
+            logging.warning("[via_skill] image-rating skill crashed, fallback: %s", e)
+
+    # ---- 默认 / fallback Python 路径(原实现,不动逻辑) ----
     captions_text = "\n".join(f"{i+1}. {c}" for i, c in enumerate(captions))
-    prompt = get_prompt(inspect.currentframe().f_code.co_name)
+    prompt = get_prompt("rate_image_importance")
     response = create_chat_completion(prompt, captions_text)
 
     parsed = _parse_json_response(response)

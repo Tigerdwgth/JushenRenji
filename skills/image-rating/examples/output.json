@@ -1,0 +1,56 @@
+{
+  "_comment": "示例输出: python -m src.llm_tools.cli rate-images --candidates examples/input.json --target-count 4 --out examples/output.json. 实际 score / reason / section 可能随模型而略变。",
+  "command": "rate-images",
+  "input": {
+    "candidates": "examples/input.json",
+    "target_count": 4,
+    "out": "examples/output.json"
+  },
+  "expected_stdout": {
+    "ok": true,
+    "scored": 5,
+    "above_5": 3
+  },
+  "expected_out_file": [
+    {
+      "image_index": 0,
+      "caption": "Figure 1: Overall architecture of ViTacFormer with cross-modal fusion...",
+      "score": 8.5,
+      "reason": "高层架构图,核心方法可视化",
+      "recommended_section": "method",
+      "rejected": false
+    },
+    {
+      "image_index": 1,
+      "caption": "Equation 3: Cross-attention loss function L_attn = ...",
+      "score": 3.0,
+      "reason": "公式/约束截图,不适合长时间画面展示",
+      "recommended_section": "none",
+      "rejected": true
+    },
+    {
+      "image_index": 2,
+      "caption": "Figure 4: Quantitative comparison on dexterous manipulation benchmarks...",
+      "score": 8.0,
+      "reason": "核心实验主表,数据有说服力",
+      "recommended_section": "results",
+      "rejected": false
+    },
+    {
+      "image_index": 3,
+      "caption": "Figure 5: Ablation on number of tactile tokens...",
+      "score": 5.5,
+      "reason": "消融分析,辅助理解",
+      "recommended_section": "results",
+      "rejected": false
+    },
+    {
+      "image_index": 4,
+      "caption": "Figure 2: Real-world hardware setup, showing 3-finger gripper...",
+      "score": 7.0,
+      "reason": "硬件平台图,适合 intro 段",
+      "recommended_section": "intro",
+      "rejected": false
+    }
+  ]
+}
