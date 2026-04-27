@@ -483,6 +483,49 @@ JSR_USE_SKILL_RATE_IMAGES=1 JSR_NETWORK_PROFILE=gsjts python src/main.py \
 
 `paperagent_workflow.py` 调用 `rate_image_importance(captions)` 时，环境变量触发后会 subprocess 调 `python -m src.llm_tools.cli rate-images`，得到的多轮决策结果转成 legacy `list[int]` 返回，下游 `select_top_images` 完全无感。详见 `skills/image-rating/SKILL.md`。
 
+### 中文标题生成 (title-cn skill 路径)
+
+仓库内置 `skills/title-cn/`,把 `llm_tools.llm_agent.generate_video_title` 的"英文标题翻译为频道风格中文标题"步骤包装成 JSON-stdout CLI,内部用 **opencode 多轮 reasoning** 替代原 LLM 单次问到底:
+
+1. Round 1:基于英文标题 + abstract 摘要,生成 3-5 个候选中文标题
+2. Round 2:自检每个候选——字数 ≤ 20?保留专有名词?有动词?跟历史标题撞车?
+3. Round 3:选 top 1,输出最终标题 + 一句话理由
+
+频道风格约束:`<英文专有名词>: <核心动作或卖点>` 句式,≤ 20 字,保留 CamelCase/ALLCAPS 专有名词(ViTacFormer / BESTRO / VistaBot / π0 等),禁止"首次/突破/震撼/颠覆"等夸张宣传词。CLI 内置 `_sanitize_title_for_channel` + `_enforce_max_len` + `_ensure_proper_noun` 三重代码层兜底,即使 LLM 输出违规也会被自动修正。
+
+**默认行为不变**:`generate_video_title(text)` 仍走原 LLM 单次。设 `JSR_USE_SKILL_TITLE_CN=1` 后,函数会优先 subprocess 调本 skill;skill 失败时自动 fallback 回原 LLM 单次。返回值始终是 `str` (legacy API 兼容)。
+
+#### 安装本地 skill
+
+```bash
+cd ~/Projects/VlogCutter/JushenRenji
+npx skills add ./skills/title-cn --yes
+```
+
+#### CLI 直接调用
+
+```bash
+JSR_NETWORK_PROFILE=gsjts python -m src.llm_tools.cli title-cn \
+    --en-title "ViTacFormer: Learning Cross-Modal Representation for Visuo-Tactile Dexterous Manipulation" \
+    --abstract "We propose ViTacFormer, a cross-modal transformer that fuses visual and tactile inputs..." \
+    --out /tmp/title.json \
+    --max-len 20
+```
+
+输出 stdout:`{"ok": true, "cn_title": "ViTacFormer: 跨模态学灵巧手", "len": 20}`,`/tmp/title.json` 内含 `cn_title / candidates / reason / char_count` 字段。
+
+#### 在 paper2video 流程中启用 skill 路径
+
+```bash
+JSR_USE_SKILL_TITLE_CN=1 JSR_NETWORK_PROFILE=gsjts python src/main.py \
+    --paper-link https://arxiv.org/abs/2506.15953 \
+    --target-duration 300
+```
+
+`paperagent_workflow.py` 调用 `generate_video_title(text, paper_title=..., paper_abstract=...)` 时,环境变量触发后会 subprocess 调 `python -m src.llm_tools.cli title-cn`,得到的多轮决策结果作为 `str` 返回,下游 `cn_titles[0]` 完全无感。详见 `skills/title-cn/SKILL.md`。
+
+---
+
 ---
 
 ## 运行测试

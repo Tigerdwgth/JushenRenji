@@ -1,0 +1,25 @@
+{
+  "_comment": "Example output of: python -m src.llm_tools.cli title-cn ... — JSON 形态示例 (实际 cn_title / candidates / reason 随模型而略变)。",
+  "command": "title-cn",
+  "input": {
+    "en_title": "ViTacFormer: Learning Cross-Modal Representation for Visuo-Tactile Dexterous Manipulation",
+    "abstract": "...",
+    "max_len": 20,
+    "out": "examples/output.json"
+  },
+  "expected_stdout": {
+    "ok": true,
+    "cn_title": "ViTacFormer: 手眼触觉融合做灵巧操作",
+    "len": 19
+  },
+  "expected_out_file": {
+    "cn_title": "ViTacFormer: 手眼触觉融合做灵巧操作",
+    "candidates": [
+      "ViTacFormer: 手眼触觉融合做灵巧操作",
+      "ViTacFormer: 视触觉融合驱动灵巧操作",
+      "ViTacFormer: 跨模态融合让机器人灵巧抓握"
+    ],
+    "reason": "保留 ViTacFormer 专有名词 + 突出'做灵巧操作'动作; 19 字符合预算; 第 3 个候选超 20 字被裁",
+    "char_count": 19
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "_comment": "Example input for: python -m src.llm_tools.cli title-cn --en-title ... --abstract ... --out output.json --max-len 20",
+  "en_title": "ViTacFormer: Learning Cross-Modal Representation for Visuo-Tactile Dexterous Manipulation",
+  "abstract": "Robotic manipulation requires fine-grained perception combining vision and touch. We present ViTacFormer, a cross-modal transformer that fuses RGB images with tactile sensor signals via shared-token attention. Pretrained on 200K teleoperation episodes and finetuned per-task with 50 demos, ViTacFormer achieves 87% success rate on a 12-task benchmark, surpassing vision-only baselines by 23 points and prior multi-modal methods by 11 points.",
+  "max_len": 20
+}

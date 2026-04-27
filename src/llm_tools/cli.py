@@ -1,13 +1,15 @@
-"""``src.llm_tools.cli`` — opencode skill 的 LLM 命令行入口（P1 + P3）。
+"""``src.llm_tools.cli`` — opencode skill 的 LLM 命令行入口（P1 + P3 + P4）。
 
 子命令：
 - ``generate-plan``  把 paper_meta JSON 生成 5 段式视频脚本 JSON（P1: video-plan）
 - ``rate-images``    给候选图片批量打分(0-10) + 推荐 section（P3: image-rating）
+- ``title-cn``       多轮 reasoning 把英文论文标题翻译为频道风格中文标题（P4: title-cn）
 
 统一 JSON 输出契约（stdout）::
 
     成功(generate-plan): {"ok": true, "out": "<path>", "sections": ["opening", ...]}
     成功(rate-images):   {"ok": true, "scored": <n>, "above_5": <n>}
+    成功(title-cn):      {"ok": true, "cn_title": "<...>", "len": <n>}
     失败:                {"ok": false, "error": "<msg>"}
 
 stderr 仅写日志（WARNING+），不污染 stdout JSON 契约。
@@ -432,6 +434,22 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="opencode 模型名(空则从 config.yaml.opencode_model 读)")
     p3.add_argument("--target-count", type=int, default=8,
                     help="期望保留多少张图(默认 8)")
+
+    # P4: title-cn
+    p4 = sub.add_parser(
+        "title-cn",
+        help="多轮 reasoning 把英文论文标题翻译为频道风格中文标题(≤20 字)",
+    )
+    p4.add_argument("--en-title", required=True,
+                    help="论文英文原标题")
+    p4.add_argument("--abstract", default="",
+                    help="论文 abstract(可选,用于决定核心动作)")
+    p4.add_argument("--out", required=True,
+                    help="输出 cn_title JSON 文件路径")
+    p4.add_argument("--opencode-model", default="",
+                    help="opencode 模型名(空则从 config.yaml.opencode_model 读)")
+    p4.add_argument("--max-len", type=int, default=20,
+                    help="中文标题最大字数(默认 20)")
 
     return parser
 
@@ -869,9 +887,403 @@ def _run_rate_images(args) -> int:
     return 0
 
 
+# =============================================================================
+# P4: title-cn 子命令 — 多轮 reasoning 把英文标题翻译为频道风格中文标题
+# =============================================================================
+
+# 频道风格历史范例(从 cache/published_papers.json 真实数据抽取),供 prompt 内嵌
+_CHANNEL_GOOD_EXAMPLES = (
+    "ViTacFormer: 手眼触觉融合做灵巧操作",
+    "VistaBot: 视角鲁棒机器人操控新方法",
+    "BESTRO: 拆解对手反应学习多人博弈",
+    "FAST π0: 高效机器人动作字元",
+    "MAXMI: 最大互信息准则引领机器人操控概念发现",
+    "CycleIK: 神经逆运动学新突破",
+    "VideoWorld: 无标签视频知识学习的革命",
+)
+
+_CHANNEL_BAD_EXAMPLES = (
+    "基于跨模态注意力机制的视触觉融合 Transformer",
+    "像素级联合嵌入预测架构的端到端世界模型解读",
+    "突破!首次实现机器人多模态融合的革命性新进展",
+)
+
+# 夸张宣传词(直接复用 sanitize_generated_title 的列表; 这里冗余一份用于 prompt 提示)
+_EXAGGERATED_WORDS = (
+    "首次", "首个", "首款", "突破", "新突破", "震撼", "颠覆", "炸裂",
+    "最新进展", "重磅", "必看",
+)
+
+
+def _extract_proper_noun(en_title: str) -> str:
+    """从英文标题中提取专有名词(CamelCase / ALLCAPS / 带连字符 / 带数字)。
+
+    优先级:
+      1. 标题开头到第一个冒号的前 1-2 个 token (例如 "ViTacFormer:" → "ViTacFormer")
+      2. 标题里的 CamelCase / ALLCAPS / 带数字的 token (例如 "π0", "RoboMamba")
+      3. 全无则返回空串
+
+    返回 ≤ 16 字符,空串表示没找到。
+    """
+    if not en_title or not isinstance(en_title, str):
+        return ""
+    s = en_title.strip()
+    # 优先冒号前
+    if ":" in s:
+        head = s.split(":", 1)[0].strip()
+        # 取最后一个 token (通常专有名词在冒号前)
+        toks = head.split()
+        if toks:
+            cand = toks[-1].strip(",.;\"'")
+            # 长度合理 + 含大写或数字才算专有名词
+            if 2 <= len(cand) <= 16 and re.search(r"[A-Z\d]", cand):
+                return cand
+    # 否则从全标题里挑 CamelCase / ALLCAPS / 带数字 token
+    for tok in re.findall(r"[A-Za-z\u00C0-\u024F\u03B1-\u03C9\d\-]+", s):
+        if len(tok) < 2 or len(tok) > 16:
+            continue
+        # 不要纯小写 (普通词)
+        if tok.lower() == tok:
+            continue
+        # 不要常见无意义大写词
+        if tok.upper() in ("THE", "A", "AN", "ICRA", "RSS", "NEURIPS", "ICLR", "CVPR", "ECCV", "ICCV"):
+            continue
+        return tok
+    return ""
+
+
+def _build_title_cn_prompt(en_title: str, abstract: str, max_len: int) -> str:
+    """构造给 opencode 的 title-cn 多轮决策 prompt。
+
+    JSON 模板里花括号必须 ``{{`` ``}}`` 转义(LESSONS 已记)；本函数用字符串拼接,
+    所以普通 ``{`` ``}`` 即可。
+    """
+    abs_clip = (abstract or "").strip()[:1500]
+    proper = _extract_proper_noun(en_title)
+
+    lines = []
+    lines.append("你是 'B 站 / 小红书 - 具身人机' 频道的资深视频文案。")
+    lines.append("请为下面这篇论文生成一个频道风格的中文视频标题(用于封面 + 投稿)。")
+    lines.append("")
+    lines.append("【代码生成铁律】")
+    lines.append("- 这是一个独立的标题翻译任务,不要 read / cat 工作目录中任何文件,不要调用 file/shell tool。")
+    lines.append("- 直接基于下面给定的英文标题 + abstract 推理,从零生成中文标题。")
+    lines.append("- 输出必须是唯一一个 ```json ... ``` 代码块,严格遵守下面的 JSON Schema。")
+    lines.append("")
+    lines.append("【输入】")
+    lines.append("英文标题: " + (en_title or "").strip())
+    if abs_clip:
+        lines.append("Abstract:")
+        lines.append(abs_clip)
+    lines.append("")
+    lines.append("【频道风格约束(违反直接判错)】")
+    lines.append("1. 中文标题字数 ≤ " + str(int(max_len)) + " 字(英文+中文+标点合计)。")
+    lines.append("2. 必须保留论文方法的英文专有名词(CamelCase/ALLCAPS/带连字符/带数字)。")
+    if proper:
+        lines.append("   该论文的英文专有名词应是 '" + proper + "'(从标题前缀提取得到)。")
+    lines.append("3. 必须有动词(做 / 拆解 / 学 / 重塑 / 让 / 看一遍就会 / 引领 / 突破... 二选一即可)。")
+    lines.append("4. 禁止堆术语: 像 '基于跨模态注意力机制的视触觉融合 Transformer' 这种直接判错。")
+    lines.append("5. 禁止夸张宣传词: " + ", ".join(_EXAGGERATED_WORDS) + "。")
+    lines.append("6. 句式优先 '<英文专有名词>: <核心动作或卖点>' (英文冒号 ':' 分隔)。")
+    lines.append("")
+    lines.append("【好示例(可参考风格,不要直接抄)】")
+    for ex in _CHANNEL_GOOD_EXAMPLES:
+        lines.append("- " + ex)
+    lines.append("")
+    lines.append("【坏示例(避免)】")
+    for ex in _CHANNEL_BAD_EXAMPLES:
+        lines.append("- " + ex)
+    lines.append("")
+    lines.append("【多轮决策(必须内部依次执行)】")
+    lines.append("- 第 1 轮: 基于英文标题 + abstract 摘要的核心方法 / 卖点, 生成 3-5 个候选中文标题。")
+    lines.append("- 第 2 轮: 自检每个候选——")
+    lines.append("    a) 字数是否 ≤ " + str(int(max_len)) + " 字?")
+    lines.append("    b) 是否保留了英文专有名词?")
+    lines.append("    c) 是否有动词?")
+    lines.append("    d) 是否堆术语?")
+    lines.append("    e) 是否跟下面历史标题撞车? 历史: " + " / ".join(_CHANNEL_GOOD_EXAMPLES))
+    lines.append("- 第 3 轮: 选 top 1, 输出最终 cn_title + 一句话理由。")
+    lines.append("")
+    lines.append("【输出 JSON Schema(严格遵守)】")
+    lines.append("{")
+    lines.append('  "cn_title": "<最终中文标题>",')
+    lines.append('  "candidates": ["候选1", "候选2", "候选3"],')
+    lines.append('  "reason": "<选 top 1 的一句话理由>",')
+    lines.append('  "char_count": <整数, cn_title 字符数>')
+    lines.append("}")
+    lines.append("")
+    lines.append("仅输出一个 ```json ... ``` 代码块, 不加任何前后说明文字。")
+    return "\n".join(lines)
+
+
+def _run_opencode_title(prompt_text: str, opencode_model: str,
+                         timeout_sec: int = 240) -> str:
+    """调 ``opencode run -m <model> -`` (pipe 模式) — P4 wrapper。
+
+    LESSONS: 必须显式 ``cd cache_dir + export PATH=/usr/local/bin:$PATH``,
+    防 conda env 老 node 污染。prompt 走 stdin pipe (避免 ``$(cat)`` 命令行展开)。
+    失败 / timeout / FileNotFound 一律返回空串,不抛异常。
+    """
+    if not opencode_model:
+        logging.warning("[llm.cli/title-cn] opencode_model not configured, skip opencode")
+        return ""
+
+    cache_dir = os.path.join(_project_root(), "cache")
+    os.makedirs(cache_dir, exist_ok=True)
+    prompt_file = os.path.join(cache_dir, "_title_cn_prompt.txt")
+    wrapper = os.path.join(cache_dir, "_title_cn_wrap.sh")
+
+    try:
+        with open(prompt_file, "w", encoding="utf-8") as f:
+            f.write(prompt_text)
+        with open(wrapper, "w", encoding="utf-8") as wf:
+            wf.write("#!/bin/bash\n")
+            wf.write("export PATH=/usr/local/bin:$PATH\n")
+            wf.write('cd "{c}"\n'.format(c=cache_dir))
+            wf.write('cat "{p}" | opencode run -m {m} -\n'.format(
+                p=prompt_file, m=opencode_model))
+        os.chmod(wrapper, 0o755)
+    except Exception as e:  # noqa: BLE001
+        logging.warning("[llm.cli/title-cn] write opencode wrapper failed: %s", e)
+        return ""
+
+    env = os.environ.copy()
+    for k in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
+        env.pop(k, None)
+
+    try:
+        r = subprocess.run(
+            ["bash", wrapper], capture_output=True, text=True,
+            timeout=timeout_sec, env=env, cwd=cache_dir,
+        )
+        out = r.stdout or r.stderr or ""
+    except subprocess.TimeoutExpired:
+        logging.warning("[llm.cli/title-cn] opencode timeout after %ds", timeout_sec)
+        return ""
+    except FileNotFoundError as e:
+        logging.warning("[llm.cli/title-cn] opencode binary not found: %s", e)
+        return ""
+    except Exception as e:  # noqa: BLE001
+        logging.warning("[llm.cli/title-cn] opencode run failed: %s", e)
+        return ""
+
+    out = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", out or "")
+    return out
+
+
+def _parse_title_cn_json(raw: str) -> Optional[dict]:
+    """从 opencode/LLM 返回中抽 ```json ... ``` 块或裸 {...},解析为 dict。
+
+    与 _parse_plan_json 类似但要求 dict 而非 list。
+    """
+    if not raw or not isinstance(raw, str):
+        return None
+    s = raw.strip()
+    m = re.search(r"```json\s*\n(.*?)\n```", s, re.DOTALL)
+    if m:
+        try:
+            obj = json.loads(m.group(1))
+            if isinstance(obj, dict):
+                return obj
+        except json.JSONDecodeError:
+            pass
+    m = re.search(r"```\s*\n(.*?)\n```", s, re.DOTALL)
+    if m:
+        try:
+            obj = json.loads(m.group(1))
+            if isinstance(obj, dict):
+                return obj
+        except json.JSONDecodeError:
+            pass
+    m = re.search(r"\{.*\}", s, re.DOTALL)
+    if m:
+        try:
+            obj = json.loads(m.group())
+            if isinstance(obj, dict):
+                return obj
+        except json.JSONDecodeError:
+            pass
+    return None
+
+
+def _enforce_max_len(title: str, max_len: int) -> str:
+    """硬约束: 若标题超长, 在英文专有名词后保留尽可能多中文部分,余的截断。
+
+    规则:
+      - 若 ≤ max_len: 原样返回
+      - 否则截到 max_len, 优先保留英文 + 冒号前缀
+    """
+    if not title or not isinstance(title, str):
+        return ""
+    s = title.strip()
+    if len(s) <= max_len:
+        return s
+    # 截断: 简单按字符截
+    if ":" in s:
+        head, tail = s.split(":", 1)
+        head = head.strip() + ": "
+        if len(head) >= max_len:
+            return head[:max_len].rstrip(": ")
+        room = max_len - len(head)
+        return head + tail.strip()[:room]
+    return s[:max_len]
+
+
+def _ensure_proper_noun(cn_title: str, en_title: str) -> str:
+    """若中文标题没出现英文专有名词(英文标题里抽出的), 自动在前面加上。"""
+    if not cn_title:
+        return ""
+    proper = _extract_proper_noun(en_title)
+    if not proper:
+        return cn_title
+    if proper.lower() in cn_title.lower():
+        return cn_title
+    # 插入: "<proper>: <原标题>"
+    return proper + ": " + cn_title.strip()
+
+
+def _sanitize_title_for_channel(title: str) -> str:
+    """共享 sanitize_generated_title (去夸张词); 不抛异常。"""
+    if not title:
+        return ""
+    try:
+        try:
+            from src.utils.title_cleaner import sanitize_generated_title
+        except ImportError:
+            from utils.title_cleaner import sanitize_generated_title  # type: ignore
+        cleaned = sanitize_generated_title(title, fallback=title)
+        return cleaned or title
+    except Exception as e:  # noqa: BLE001
+        logging.warning("[llm.cli/title-cn] sanitize 失败: %s", e)
+        return title
+
+
+def _normalize_title_record(rec: dict, en_title: str, max_len: int) -> dict:
+    """把 opencode/LLM 返回的 dict 规整为标准 schema。
+
+    - 强 enforce 字数 ≤ max_len
+    - 强 enforce 含英文专有名词
+    - 去除夸张宣传词
+    - 计算 char_count
+    """
+    if not isinstance(rec, dict):
+        rec = {}
+    cn_title = (rec.get("cn_title") or "").strip()
+    candidates = rec.get("candidates") or []
+    if not isinstance(candidates, list):
+        candidates = []
+    candidates = [str(c).strip() for c in candidates if c]
+    reason = (rec.get("reason") or "").strip()[:200]
+
+    # 双重保险: 去夸张词 → 补专有名词 → 截断字数
+    cn_title = _sanitize_title_for_channel(cn_title)
+    cn_title = _ensure_proper_noun(cn_title, en_title)
+    cn_title = _enforce_max_len(cn_title, max_len)
+
+    # candidates 同样做 sanitize, 但不强制 max_len 截断 (供调试参考)
+    candidates = [_sanitize_title_for_channel(c) for c in candidates[:5]]
+
+    return {
+        "cn_title": cn_title,
+        "candidates": candidates,
+        "reason": reason,
+        "char_count": len(cn_title),
+    }
+
+
+def _fallback_plain_llm_title(prompt_text: str) -> str:
+    """opencode 失败时, 尝试用 plain LLM 单次。"""
+    try:
+        from src.llm_tools.llm_agent import create_chat_completion
+        return create_chat_completion(prompt_text, max_tokens=2048) or ""
+    except Exception as e:  # noqa: BLE001
+        logging.warning("[llm.cli/title-cn] plain LLM fallback 失败: %s", e)
+        return ""
+
+
+def _fallback_default_title(en_title: str, max_len: int) -> dict:
+    """opencode + LLM 全失败时,启发式构造一个最低限度可用的中文标题。
+
+    优先用英文专有名词 + 通用兜底动作短语。
+    """
+    proper = _extract_proper_noun(en_title) or "论文"
+    fallback = proper + ": 论文要点解读"
+    fallback = _enforce_max_len(fallback, max_len)
+    return {
+        "cn_title": fallback,
+        "candidates": [fallback],
+        "reason": "fallback default(opencode/LLM 不可用)",
+        "char_count": len(fallback),
+    }
+
+
+def _generate_cn_title_via_opencode(en_title: str, abstract: str,
+                                     max_len: int, opencode_model: str) -> dict:
+    """主流程: opencode pipe → 失败 fallback plain LLM → 仍失败启发式默认值。
+
+    永不抛异常; 返回 dict 包含 cn_title/candidates/reason/char_count。
+    """
+    en_title = (en_title or "").strip()
+    if not en_title:
+        return {"cn_title": "", "candidates": [], "reason": "en_title empty",
+                "char_count": 0}
+
+    prompt = _build_title_cn_prompt(en_title, abstract or "", int(max_len or 20))
+
+    raw1 = _run_opencode_title(prompt, opencode_model)
+    parsed = _parse_title_cn_json(raw1)
+    if not isinstance(parsed, dict) or not parsed.get("cn_title"):
+        logging.warning("[llm.cli/title-cn] opencode path 失败, fallback to plain LLM")
+        raw2 = _fallback_plain_llm_title(prompt)
+        parsed = _parse_title_cn_json(raw2)
+
+    if not isinstance(parsed, dict) or not (parsed.get("cn_title") or "").strip():
+        logging.error("[llm.cli/title-cn] opencode + plain LLM 均失败,启发式默认值")
+        return _fallback_default_title(en_title, int(max_len or 20))
+
+    return _normalize_title_record(parsed, en_title, int(max_len or 20))
+
+
+def _run_title_cn(args) -> int:
+    en_title = (args.en_title or "").strip()
+    if not en_title:
+        _print_json({"ok": False, "error": "en_title cannot be empty"})
+        return 1
+
+    abstract = (args.abstract or "").strip()
+    max_len = int(args.max_len or 20)
+    if max_len <= 0:
+        _print_json({"ok": False, "error": "max_len must be positive"})
+        return 1
+
+    opencode_model = _resolve_opencode_model(args.opencode_model)
+    result = _generate_cn_title_via_opencode(en_title, abstract, max_len, opencode_model)
+
+    out_path = args.out
+    out_dir = os.path.dirname(os.path.abspath(out_path))
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+    try:
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(result, f, ensure_ascii=False, indent=2)
+    except Exception as e:  # noqa: BLE001
+        _print_json({"ok": False, "error": "write out failed: %s: %s" % (type(e).__name__, e)})
+        return 1
+
+    cn_title = result.get("cn_title") or ""
+    if not cn_title:
+        _print_json({"ok": False, "error": "cn_title empty after all fallbacks",
+                     "out": os.path.abspath(out_path)})
+        return 1
+    _print_json({"ok": True, "cn_title": cn_title, "len": len(cn_title)})
+    return 0
+
+
+
 _DISPATCH = {
     "generate-plan": _run_generate_plan,
     "rate-images": _run_rate_images,
+    "title-cn": _run_title_cn,
 }
 
 

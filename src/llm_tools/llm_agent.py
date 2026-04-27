@@ -124,11 +124,45 @@ def generate_short_summary(text, word_budget: int = 120):
     prompt = prompt_template.format(word_budget=word_budget) + text
     return create_chat_completion(prompt)
 
-def generate_video_title(text):
-    prompt = get_prompt(inspect.currentframe().f_code.co_name)
+def generate_video_title(text=None, via_skill: bool = False,
+                          paper_title: str = None, paper_abstract: str = None,
+                          max_len: int = 20):
+    """为论文讲解视频生成中文标题(频道风格 ≤20 字, 保留英文专有名词)。
+
+    Args:
+        text: 老接口(论文描述文本前 200 字),用于 prompt 输入。可空。
+        via_skill: True 或环境变量 ``JSR_USE_SKILL_TITLE_CN=1`` 时,走 subprocess
+                   调 title-cn skill (P4); 失败 fallback 到原 LLM 单次。
+                   默认 False (行为不变)。
+        paper_title: 论文英文标题 (skill 路径必需; 缺失时从 text 提取首行)。
+        paper_abstract: 论文 abstract (skill 路径可选)。
+        max_len: 中文标题最大字数 (skill 路径,默认 20)。
+
+    Returns:
+        str: 中文标题, 始终是字符串 (legacy API 兼容)。
+    """
+    use_skill = bool(via_skill) or os.environ.get("JSR_USE_SKILL_TITLE_CN", "").strip() in ("1", "true", "True")
+
+    if use_skill:
+        try:
+            cn_title = _call_title_cn_skill(
+                en_title=paper_title,
+                abstract=paper_abstract,
+                text=text,
+                max_len=int(max_len or 20),
+            )
+            if cn_title:
+                logging.info("[via_skill] title-cn skill succeeded")
+                return cn_title
+            logging.warning("[via_skill] title-cn skill returned empty, fallback to plain LLM")
+        except Exception as e:  # noqa: BLE001
+            logging.warning("[via_skill] title-cn skill crashed, fallback: %s", e)
+
+    # ---- 默认 / fallback Python 路径(原实现, 不动逻辑) ----
+    prompt = get_prompt("generate_video_title")
     ret_str = create_chat_completion(prompt, text)
     ret_str = sanitize_generated_title(ret_str)
-    # 确保英文论文名后有冒号分隔：找到第一个中文字符位置，在其前插入": "
+    # 确保英文论文名后有冒号分隔: 找到第一个中文字符位置, 在其前插入 ": "
     if ret_str and ':' not in ret_str and '：' not in ret_str:
         idx = first_chinese_index(ret_str)
         if idx > 0:
@@ -568,6 +602,99 @@ def _call_image_rating_skill(captions: list, target_count: int = 8,
             s = max(0.0, min(10.0, s))
             out_scores.append(int(round(s)))
         return out_scores
+    finally:
+        try:
+            _shutil.rmtree(tmp_dir, ignore_errors=True)
+        except Exception:
+            pass
+
+
+
+# =============================================================================
+# P4: title-cn skill subprocess hook
+# =============================================================================
+
+def _call_title_cn_skill(en_title=None, abstract=None, text=None,
+                         max_len: int = 20, timeout_sec: int = 300):
+    """以 subprocess 模式调 ``python -m src.llm_tools.cli title-cn``。
+
+    返回中文标题字符串(legacy API: str); 失败返回空串。
+    永不抛异常 → 上层 ``generate_video_title`` 自行 fallback。
+
+    Args:
+        en_title: 英文标题; 缺失则从 text 取首行。
+        abstract: 论文 abstract; 可选。
+        text: 老接口入参 (论文描述文本); 用于兜底 en_title / abstract。
+        max_len: 中文标题最大字数。
+        timeout_sec: subprocess 超时秒数。
+    """
+    import subprocess as _sp
+    import tempfile
+    import shutil as _shutil
+
+    # 兜底拼 en_title / abstract
+    en = (en_title or "").strip()
+    if not en and text:
+        # text 通常是论文前 200 字; 取首行非空作为 en_title
+        for line in (text or "").splitlines():
+            line = line.strip()
+            if line:
+                en = line[:120]
+                break
+    if not en:
+        logging.warning("[via_skill/title-cn] en_title 缺失, skill skipped")
+        return ""
+
+    abs_text = (abstract or "").strip()
+    if not abs_text and text:
+        # 用 text 后续部分作为 abstract 兜底
+        abs_text = (text or "").strip()[:1500]
+
+    project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    cache_root = os.path.join(project_root, "cache")
+    if not os.path.isdir(cache_root):
+        cache_root = None
+
+    tmp_dir = tempfile.mkdtemp(prefix="title_cn_", dir=cache_root)
+    out_path = os.path.join(tmp_dir, "title.json")
+
+    try:
+        env = os.environ.copy()
+        env["PYTHONPATH"] = project_root + os.pathsep + env.get("PYTHONPATH", "")
+
+        cmd = [
+            sys.executable, "-m", "src.llm_tools.cli", "title-cn",
+            "--en-title", en,
+            "--abstract", abs_text,
+            "--out", out_path,
+            "--max-len", str(int(max_len or 20)),
+        ]
+        try:
+            r = _sp.run(cmd, capture_output=True, text=True,
+                        timeout=timeout_sec, env=env, cwd=project_root)
+        except _sp.TimeoutExpired:
+            logging.warning("[via_skill/title-cn] CLI subprocess timeout after %ds", timeout_sec)
+            return ""
+        except FileNotFoundError as e:
+            logging.warning("[via_skill/title-cn] python binary not found: %s", e)
+            return ""
+
+        if r.returncode != 0:
+            logging.warning("[via_skill/title-cn] CLI rc=%d stderr=%s",
+                            r.returncode, (r.stderr or "")[-500:])
+            # rc=1 也尝试读 out 文件 (可能写了 default fallback)
+        if not os.path.isfile(out_path):
+            logging.warning("[via_skill/title-cn] out file not produced")
+            return ""
+        try:
+            with open(out_path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+        except Exception as e:  # noqa: BLE001
+            logging.warning("[via_skill/title-cn] out parse failed: %s", e)
+            return ""
+
+        cn_title = (payload.get("cn_title") or "").strip() if isinstance(payload, dict) else ""
+        return cn_title
     finally:
         try:
             _shutil.rmtree(tmp_dir, ignore_errors=True)
