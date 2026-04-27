@@ -1,0 +1,101 @@
+{
+  "_comment": "示例输出: python -m src.figure_cli analyze-figure --image cache/arxiv_src/2506.15953/img/arch.png --paper-context '...ViTacFormer...' --out /tmp/x.json. 实际 components/connections 数量随论文不同。",
+  "command": "analyze-figure",
+  "input": {
+    "image": "cache/arxiv_src/2506.15953/img/arch.png",
+    "paper_context": "ViTacFormer: cross-modal transformer for visuo-tactile manipulation. Key idea: jointly encode RGB and tactile signals, predict future tactile latents, drive action via decoder.",
+    "out": "/tmp/figure_analysis.json"
+  },
+  "expected_stdout": {
+    "ok": true,
+    "out": "/tmp/figure_analysis.json",
+    "components": 6,
+    "connections": 5
+  },
+  "expected_out_file": {
+    "figure_type": "architecture",
+    "layout_direction": "left-to-right",
+    "components": [
+      {
+        "name": "VisualEncoder",
+        "chinese_name": "视觉编码器",
+        "type": "module",
+        "position": "left",
+        "color": "blue",
+        "shape": "rectangle",
+        "size": "medium",
+        "children": [],
+        "description": "提取 RGB 图像特征"
+      },
+      {
+        "name": "TactileEncoder",
+        "chinese_name": "触觉编码器",
+        "type": "module",
+        "position": "left",
+        "color": "green",
+        "shape": "rectangle",
+        "size": "medium",
+        "children": [],
+        "description": "提取触觉信号特征"
+      },
+      {
+        "name": "CrossAttention",
+        "chinese_name": "跨注意力",
+        "type": "module",
+        "position": "center",
+        "color": "purple",
+        "shape": "rectangle",
+        "size": "large",
+        "children": [],
+        "description": "融合视觉与触觉特征"
+      },
+      {
+        "name": "Transformer",
+        "chinese_name": "Transformer",
+        "type": "module",
+        "position": "center",
+        "color": "orange",
+        "shape": "rectangle",
+        "size": "large",
+        "children": [],
+        "description": "时序编码"
+      },
+      {
+        "name": "TactilePredictor",
+        "chinese_name": "触觉预测器",
+        "type": "module",
+        "position": "right",
+        "color": "red",
+        "shape": "rectangle",
+        "size": "medium",
+        "children": [],
+        "description": "预测未来触觉信号"
+      },
+      {
+        "name": "ActionHead",
+        "chinese_name": "动作头",
+        "type": "output",
+        "position": "right",
+        "color": "yellow",
+        "shape": "rectangle",
+        "size": "medium",
+        "children": [],
+        "description": "输出动作向量"
+      }
+    ],
+    "connections": [
+      {"from": "VisualEncoder", "to": "CrossAttention", "label": "rgb_feat", "type": "arrow", "description": "RGB 特征传入"},
+      {"from": "TactileEncoder", "to": "CrossAttention", "label": "tac_feat", "type": "arrow", "description": "触觉特征传入"},
+      {"from": "CrossAttention", "to": "Transformer", "label": "fused", "type": "arrow", "description": "融合特征"},
+      {"from": "Transformer", "to": "TactilePredictor", "label": "h", "type": "arrow", "description": "预测分支"},
+      {"from": "Transformer", "to": "ActionHead", "label": "h", "type": "arrow", "description": "动作分支"}
+    ],
+    "data_flow": "RGB + 触觉信号 -> 双 Encoder -> Cross-Attention 融合 -> Transformer 时序建模 -> 双头输出 (触觉预测 + 动作)",
+    "key_innovation": "联合预测未来触觉信号与动作的跨模态 Transformer 架构",
+    "animation_suggestion": "依次淡入 VisualEncoder/TactileEncoder -> CrossAttention -> Transformer -> Predictor + ActionHead",
+    "has_neural_network": true,
+    "nn_layers": ["transformer", "attention"],
+    "source": "vision_skill",
+    "has_precise_bbox": false
+  }
+}

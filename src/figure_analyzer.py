@@ -42,6 +42,68 @@ def _image_to_base64(image_path: str) -> str:
 
 
 # ============================================================
+# P2 skill 分流: 调 src.figure_cli analyze-figure (opencode 多轮 reasoning)
+# ============================================================
+
+def _call_figure_skill(image_path: str, paper_context: str = "",
+                        timeout: int = 600) -> Optional[dict]:
+    """通过 subprocess 调 figure-analysis opencode skill, 返回兼容 schema。
+
+    失败 (TimeoutExpired / 非零返回 / JSON 解析失败 / 文件不存在) 都返回 None,
+    由调用方 fallback 到 Qwen-VL。
+    """
+    import subprocess
+    import sys
+    import tempfile
+
+    if not os.path.exists(image_path):
+        return None
+
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    out_fd, out_path = tempfile.mkstemp(suffix="_figure_skill.json", prefix="jsr_")
+    os.close(out_fd)
+
+    cmd = [
+        sys.executable, "-m", "src.figure_cli", "analyze-figure",
+        "--image", os.path.abspath(image_path),
+        "--paper-context", (paper_context or "")[:4000],
+        "--out", out_path,
+    ]
+    try:
+        proc = subprocess.run(
+            cmd, cwd=repo_root, capture_output=True, text=True,
+            timeout=timeout,
+        )
+        if proc.returncode != 0:
+            logger.warning("[figure_skill] subprocess rc=%d, stderr=%s",
+                           proc.returncode, (proc.stderr or "")[:300])
+            return None
+        if not os.path.exists(out_path):
+            logger.warning("[figure_skill] out file missing: %s", out_path)
+            return None
+        with open(out_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            logger.warning("[figure_skill] non-dict result")
+            return None
+        n_c = len(data.get("components", []) or [])
+        n_conn = len(data.get("connections", []) or [])
+        logger.info("[figure_skill] 成功: %d 组件, %d 连接", n_c, n_conn)
+        return data
+    except subprocess.TimeoutExpired:
+        logger.warning("[figure_skill] 超时 (%ds)", timeout)
+        return None
+    except Exception as e:
+        logger.warning("[figure_skill] 异常: %s", e)
+        return None
+    finally:
+        try:
+            os.unlink(out_path)
+        except Exception:
+            pass
+
+
+# ============================================================
 # 核心分析：使用 Qwen-VL 分析方法图
 # ============================================================
 
@@ -91,17 +153,30 @@ _FIGURE_ANALYSIS_PROMPT = """你是学术论文图像分析专家。请仔细分
 
 def analyze_figure_with_vision_llm(image_path: str,
                                     paper_context: str = "",
-                                    max_retries: int = 2) -> Optional[dict]:
+                                    max_retries: int = 2,
+                                    via_skill: bool = False) -> Optional[dict]:
     """使用 Qwen-VL (DashScope) 分析论文方法图。
 
     Args:
         image_path: 图片文件路径
         paper_context: 论文上下文（标题、摘要等，用于辅助理解）
         max_retries: 最大重试次数
+        via_skill: True 或环境变量 ``JSR_USE_SKILL_FIGURE=1`` 时, 走 figure-analysis
+            opencode skill 多轮 reasoning; subprocess 失败自动 fallback 到原 Qwen-VL。
+            默认 False (行为不变)。
 
     Returns:
         结构化分析 JSON dict，失败返回 None
     """
+    # P2: skill 分流 (subprocess 多轮 opencode reasoning)
+    use_skill = via_skill or os.environ.get("JSR_USE_SKILL_FIGURE") == "1"
+    if use_skill:
+        skill_result = _call_figure_skill(image_path, paper_context)
+        if skill_result is not None:
+            return skill_result
+        logger.warning("[figure_skill] 失败, fallback 到 Qwen-VL")
+        # fallthrough 到 Qwen-VL
+
     import dashscope
     from dashscope import MultiModalConversation
 

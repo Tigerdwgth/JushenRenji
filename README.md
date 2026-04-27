@@ -385,6 +385,56 @@ JSR_USE_SKILL_VIDEO_PLAN=1 JSR_NETWORK_PROFILE=gsjts python src/main.py \
 
 ---
 
+
+### 方法图语义分析 (figure-analysis skill 路径)
+
+仓库内置 `skills/figure-analysis/`，把 `figure_analyzer` 里的"图像语义分析"步骤
+（识别 components / connections / key_innovation 等）包装成 JSON-stdout CLI，
+内部用 **opencode 多轮 reasoning** 替代 Qwen-VL 单次问到底，
+覆盖率更稳，遗漏更少。
+
+**默认行为不变**：`analyze_figure_with_vision_llm(image_path, paper_context)` 仍走原 Qwen-VL `qwen-vl-max` 单次。设 `JSR_USE_SKILL_FIGURE=1` 后，函数会优先 subprocess 调本 skill；skill 失败时自动 fallback 回 Qwen-VL。
+
+opencode 当前主力模型 (deepseek/deepseek-v4-pro 等) 不支持图像直输，本 skill
+是基于 `paper_context` (caption / abstract / method 段落) + LaTeX 源码路径的
+**文本三轮推理**，分别问：
+
+1. Round 1：列出 5-10 个核心模块 (name / chinese_name / type / description)
+2. Round 2：模块之间的连接关系 (from / to / label / type / description)
+3. Round 3：figure_type / layout_direction / key_innovation / data_flow / animation_suggestion / has_neural_network / nn_layers
+
+输出 JSON 与 `_merge_analyses` schema 兼容（`source="vision_skill"`, `has_precise_bbox=False`），精确 bbox 仍由 EditBanana / SAM3 / arxiv_latex 等下游路径补。
+
+#### 安装本地 skill
+
+```bash
+cd ~/Projects/VlogCutter/JushenRenji
+npx skills add ./skills/figure-analysis --yes
+```
+
+#### CLI 直接调用
+
+```bash
+JSR_NETWORK_PROFILE=gsjts python -m src.figure_cli analyze-figure \
+    --image cache/arxiv_src/2506.15953/img/arch.png \
+    --paper-context "ViTacFormer: cross-modal transformer for visuo-tactile manipulation" \
+    --out /tmp/figure_analysis.json
+```
+
+stdout：`{"ok": true, "out": "/tmp/figure_analysis.json", "components": 6, "connections": 5}`。
+
+#### 在 paper2video 流程中启用 skill 路径
+
+```bash
+JSR_USE_SKILL_FIGURE=1 JSR_NETWORK_PROFILE=gsjts python src/main.py \
+    --paper-link https://arxiv.org/abs/2506.15953 \
+    --target-duration 300
+```
+
+详见 `skills/figure-analysis/SKILL.md`。
+
+---
+
 ## 运行测试
 
 ```bash
