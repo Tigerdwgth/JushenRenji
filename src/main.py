@@ -229,12 +229,17 @@ if __name__ == "__main__":
                         if manim_clip.size != main_clip.size:
                             manim_clip = manim_clip.resized(main_clip.size)
                         combined = concatenate_videoclips([manim_clip, main_clip], method="compose")
-                        combined_path = path  # 覆盖原视频
-                        combined.write_videofile(combined_path, codec="libx264", preset="ultrafast",
+                        # 写到项目 cache 下临时文件再原子覆盖, 避免 ffmpeg 同时读写 path 死锁
+                        _proj_cache = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cache")
+                        os.makedirs(_proj_cache, exist_ok=True)
+                        combined_tmp = os.path.join(_proj_cache, os.path.basename(path) + ".combined_tmp.mp4")
+                        combined.write_videofile(combined_tmp, codec="libx264", preset="ultrafast",
                                                  audio_codec="aac", logger=None)
                         manim_clip.close()
                         main_clip.close()
                         combined.close()
+                        os.replace(combined_tmp, path)
+                        combined_path = path
                         # faststart remux so moov box is at the front (required for XHS streaming)
                         import subprocess as _sp
                         fs_path = combined_path + ".fs.mp4"
