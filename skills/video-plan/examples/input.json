@@ -1,0 +1,13 @@
+{
+  "_comment": "Example paper_meta input for: python -m src.llm_tools.cli generate-plan --paper-meta example_input.json --out plan_out.json",
+  "title": "ViTacFormer: Vision-Tactile Transformer for Robotic Manipulation",
+  "abstract": "Robotic manipulation requires fine-grained perception combining vision and touch. We present ViTacFormer, a cross-modal transformer that fuses RGB images with tactile sensor signals via shared-token attention. Pretrained on 200K teleoperation episodes and finetuned per-task with 50 demos, ViTacFormer achieves 87% success rate on a 12-task benchmark, surpassing vision-only baselines by 23 points and prior multi-modal methods by 11 points.",
+  "authors": ["Jane Doe", "John Smith", "Pat Lee"],
+  "key_points": [
+    "vision + tactile cross-modal attention",
+    "200K teleop pretraining",
+    "+23pp over vision-only baseline"
+  ],
+  "venue": "RSS 2025",
+  "github_repo": "https://github.com/example/vitacformer"
+}

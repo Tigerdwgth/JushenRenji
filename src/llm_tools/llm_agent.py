@@ -143,15 +143,207 @@ def generate_video_proceedings(text):
     prompt = get_prompt(inspect.currentframe().f_code.co_name)
     return create_chat_completion(prompt, text)
 
-def generate_structured_video_plan(text, word_budget: int = 1000, max_attempts: int = 2):
+def _build_paper_meta(text=None, paper_title=None, paper_abstract=None,
+                      paper_authors=None, key_points=None, venue=None,
+                      github_repo=None) -> dict:
+    """从混合输入构造 paper_meta dict（CLI 期望的 schema）。
+
+    优先级：显式 kwargs > text 兜底（取前 1500 字塞进 abstract）。
+    """
+    meta = {
+        "title": (paper_title or "").strip() or "",
+        "abstract": (paper_abstract or "").strip() or "",
+        "authors": list(paper_authors or []),
+        "key_points": list(key_points or []),
+    }
+    if venue:
+        meta["venue"] = str(venue)
+    if github_repo:
+        meta["github_repo"] = str(github_repo)
+    if not meta["abstract"] and text:
+        meta["abstract"] = (text or "").strip()[:4000]
+    if not meta["title"] and text:
+        # 取首行 80 字作为 title 兜底
+        first_line = (text or "").strip().splitlines()[0] if text else ""
+        meta["title"] = first_line[:80] or "Untitled"
+    return meta
+
+
+def _normalize_skill_plan_to_legacy(plan: dict) -> dict:
+    """skill 输出的 5 段 plan(含 conclusion)规整成下游期望的 4 段格式。
+
+    下游(_PLAN_SECTIONS = opening/intro/method/results)只读 script 字段;
+    skill 用 text 字段。这里同时兼容两种 key,且把 conclusion 合并到 results 段尾。
+    """
+    if not isinstance(plan, dict):
+        return {}
+    out = {}
+    for sec in _PLAN_SECTIONS:
+        v = plan.get(sec, {})
+        if isinstance(v, str):
+            v = {"text": v}
+        if not isinstance(v, dict):
+            continue
+        text = (v.get("text") or v.get("script") or "").strip()
+        if not text:
+            continue
+        out[sec] = {
+            "script": text,
+            "text": text,
+        }
+        if v.get("duration_sec") is not None:
+            out[sec]["duration_sec"] = v.get("duration_sec")
+        if v.get("key_points"):
+            out[sec]["key_points"] = v.get("key_points")
+    # conclusion(skill 多出的第 5 段)拼到 results 段尾，下游 structured_plan_to_text 就能拿到
+    conc = plan.get("conclusion") or {}
+    if isinstance(conc, str):
+        conc = {"text": conc}
+    if isinstance(conc, dict):
+        conc_text = (conc.get("text") or conc.get("script") or "").strip()
+        if conc_text and out.get("results"):
+            merged = (out["results"]["script"] + "\n" + conc_text).strip()
+            out["results"]["script"] = merged
+            out["results"]["text"] = merged
+    return out
+
+
+def _call_video_plan_skill(text=None, paper_title=None, paper_abstract=None,
+                           paper_authors=None, target_duration: int = 300,
+                           language: str = "zh", timeout_sec: int = 300):
+    """以 subprocess 模式调 ``python -m src.llm_tools.cli generate-plan``。
+
+    返回 5 段 plan dict(规整成 legacy script 字段);失败返回空 dict。
+    永不抛异常 → 上层调用方自行 fallback。
+    """
+    import subprocess as _sp
+    import tempfile
+    import shutil as _shutil
+
+    paper_meta = _build_paper_meta(
+        text=text,
+        paper_title=paper_title,
+        paper_abstract=paper_abstract,
+        paper_authors=paper_authors,
+    )
+    if not paper_meta.get("title") or not paper_meta.get("abstract"):
+        logging.warning("[via_skill] paper_meta missing title/abstract; skill skipped")
+        return {}
+
+    project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+    tmp_dir = tempfile.mkdtemp(prefix="video_plan_", dir=os.path.join(project_root, "cache") if os.path.isdir(os.path.join(project_root, "cache")) else None)
+    meta_path = os.path.join(tmp_dir, "paper_meta.json")
+    out_path = os.path.join(tmp_dir, "plan_out.json")
+    try:
+        with open(meta_path, "w", encoding="utf-8") as f:
+            json.dump(paper_meta, f, ensure_ascii=False, indent=2)
+
+        env = os.environ.copy()
+        # 透传 PYTHONPATH 以便 src.* import 生效
+        env["PYTHONPATH"] = project_root + os.pathsep + env.get("PYTHONPATH", "")
+
+        cmd = [
+            sys.executable, "-m", "src.llm_tools.cli", "generate-plan",
+            "--paper-meta", meta_path,
+            "--target-duration", str(int(target_duration)),
+            "--language", str(language or "zh"),
+            "--out", out_path,
+        ]
+        try:
+            r = _sp.run(cmd, capture_output=True, text=True,
+                        timeout=timeout_sec, env=env, cwd=project_root)
+        except _sp.TimeoutExpired:
+            logging.warning("[via_skill] CLI subprocess timeout after %ds", timeout_sec)
+            return {}
+        except FileNotFoundError as e:
+            logging.warning("[via_skill] python binary not found: %s", e)
+            return {}
+        if r.returncode != 0:
+            logging.warning("[via_skill] CLI rc=%d stderr=%s", r.returncode,
+                            (r.stderr or "")[-500:])
+            # rc=1 但 plan 文件已写入(部分 sections 有效)也接受
+        if not os.path.isfile(out_path):
+            logging.warning("[via_skill] plan output file not produced")
+            return {}
+        try:
+            with open(out_path, "r", encoding="utf-8") as f:
+                raw_plan = json.load(f)
+        except Exception as e:  # noqa: BLE001
+            logging.warning("[via_skill] plan output parse failed: %s", e)
+            return {}
+        legacy = _normalize_skill_plan_to_legacy(raw_plan)
+        # 至少 4 个 _PLAN_SECTIONS 都得有 script 才算成功
+        if not all(isinstance(legacy.get(k), dict) and legacy[k].get("script")
+                   for k in _PLAN_SECTIONS):
+            logging.warning("[via_skill] skill plan missing required sections, skip")
+            return {}
+        return legacy
+    finally:
+        try:
+            _shutil.rmtree(tmp_dir, ignore_errors=True)
+        except Exception:
+            pass
+
+
+def generate_structured_video_plan(text=None, word_budget: int = 1000, max_attempts: int = 2,
+                                     via_skill: bool = False,
+                                     paper_title: str = None,
+                                     paper_abstract: str = None,
+                                     paper_authors: list = None,
+                                     target_duration: int = 300,
+                                     language: str = "zh"):
     """生成结构化视频脚本（5段式：opening → intro → method → results → conclusion）。
 
+    Args:
+        text: 论文全文(向后兼容,可与 paper_title/paper_abstract 二选一)
+        word_budget: 总字数预算(默认 1000,仅 Python 路径用)
+        max_attempts: Python 路径重试次数
+        via_skill: 显式打开 skill 路径(默认 False);也可设环境变量
+                   ``JSR_USE_SKILL_VIDEO_PLAN=1`` 触发
+        paper_title / paper_abstract / paper_authors: 显式 paper_meta 字段
+        target_duration: 目标视频时长(秒,默认 300,仅 skill 路径用)
+        language: 输出语言(默认 zh,仅 skill 路径用)
+
     Returns:
-        dict: 包含 opening/intro/method/results 等 key，
-              每个 value 包含 script 和 visual_prompt 字段。
-              如果解析失败返回空字典。
+        dict: opening/intro/method/results 4 段(每段含 script 字段);
+              skill 路径会把 conclusion 合并到 results 段尾以保持向后兼容。
+              失败返回空 dict。
+
+    路径选择(优先级从高到低):
+        1. ``via_skill=True`` 或 ``JSR_USE_SKILL_VIDEO_PLAN=1`` → subprocess 调
+           ``src.llm_tools.cli generate-plan``;失败自动 fallback Python 路径
+        2. 默认 → 走原 DeepSeek API 单次调用(向后兼容)
     """
-    prompt = get_prompt(inspect.currentframe().f_code.co_name)
+    use_skill = bool(via_skill) or os.environ.get("JSR_USE_SKILL_VIDEO_PLAN", "").strip() in ("1", "true", "True")
+
+    if use_skill:
+        try:
+            plan = _call_video_plan_skill(
+                text=text,
+                paper_title=paper_title,
+                paper_abstract=paper_abstract,
+                paper_authors=paper_authors,
+                target_duration=int(target_duration or 300),
+                language=language or "zh",
+            )
+            if plan:
+                logging.info("[via_skill] video-plan skill succeeded")
+                return plan
+            logging.warning("[via_skill] skill returned empty, fallback to Python path")
+        except Exception as e:  # noqa: BLE001
+            logging.warning("[via_skill] skill call crashed, fallback to Python path: %s", e)
+
+    # ---- 默认 / fallback Python 路径(原实现,不动逻辑) ----
+    # 兼容新签名: text 为空时,从 paper_title + paper_abstract 拼一段输入文本
+    if not text:
+        meta = _build_paper_meta(
+            paper_title=paper_title, paper_abstract=paper_abstract,
+            paper_authors=paper_authors,
+        )
+        text = (meta.get("title") + "\n\n" + meta.get("abstract")).strip()
+
+    prompt = get_prompt("generate_structured_video_plan")
     prompt = prompt + f"\n总字数预算约{word_budget}字。"
     prompt += "\n严格要求：直接输出 JSON 对象，不要使用 markdown 代码围栏（不要 ```json ... ```），不要任何额外文字。"
     required = _PLAN_SECTIONS

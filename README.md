@@ -339,6 +339,52 @@ JSR_NETWORK_PROFILE=gsjts python -m src.discovery_sources.cli hf-daily --limit 2
 
 ---
 
+### 视频脚本生成 (skill 路径)
+
+仓库内置 `skills/video-plan/`，把"5 段式结构化视频脚本生成"（opening / intro / method / results / conclusion）包装成 JSON-stdout CLI，方便 opencode / Claude / 其他 agent 在 paper2video 流程外单独调用。
+
+**默认行为不变**：`generate_structured_video_plan(text, ...)` 仍走原 DeepSeek API 单次。设 `JSR_USE_SKILL_VIDEO_PLAN=1` 后，函数内部会改走 subprocess 调本 skill；skill 失败时自动 fallback 回原 Python 路径。
+
+#### 安装本地 skill
+
+```bash
+cd ~/Projects/VlogCutter/JushenRenji
+npx skills add ./skills/video-plan --yes
+```
+
+#### CLI 直接调用
+
+```bash
+cat > /tmp/paper_meta.json <<'EOF'
+{
+  "title": "ViTacFormer",
+  "abstract": "Cross-modal transformer for visuo-tactile manipulation...",
+  "authors": ["Jane Doe", "John Smith"],
+  "key_points": ["跨模态注意力", "200K 预训练"]
+}
+EOF
+
+JSR_NETWORK_PROFILE=gsjts python -m src.llm_tools.cli generate-plan \
+    --paper-meta /tmp/paper_meta.json \
+    --target-duration 300 \
+    --language zh \
+    --out /tmp/plan_out.json
+```
+
+输出 stdout：`{"ok": true, "out": "/tmp/plan_out.json", "sections": ["opening","intro","method","results","conclusion"]}`，`/tmp/plan_out.json` 内是 5 段 JSON。
+
+#### 在 paper2video 流程中启用 skill 路径
+
+```bash
+JSR_USE_SKILL_VIDEO_PLAN=1 JSR_NETWORK_PROFILE=gsjts python src/main.py \
+    --paper-link https://arxiv.org/abs/2506.15953 \
+    --target-duration 300
+```
+
+`generate_structured_video_plan` 内部会自动 subprocess 调 `python -m src.llm_tools.cli generate-plan`，skill 输出的 5 段会规整成下游期望的 4 段（conclusion 合并到 results 段尾），保持向后兼容。详见 `skills/video-plan/SKILL.md`。
+
+---
+
 ## 运行测试
 
 ```bash
