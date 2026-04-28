@@ -140,16 +140,26 @@ def _split_into_sentences(text, max_chars=30):
     return result
 
 
-def _create_ken_burns_clip(img, duration, target_size=(1920, 1080)):
+def _create_ken_burns_clip(img, duration, target_size=(1920, 1080),
+                            zoom_end=None, pan_x_ratio=None, pan_y_ratio=None):
     """为静态图片创建 Ken Burns 效果（缓慢 zoom-in + 平移），增加动态感。
 
-    图片先完全适配画面（contain，无溢出），然后缓慢放大到 1.08x，
-    确保初始帧图片内容完全可见，避免重要内容（坐标轴、图例等）被裁掉。
+    图片先完全适配画面（contain，无溢出），然后缓慢放大到 zoom_end（默认 1.05），
+    确保初始帧图片内容完全可见，避免重要内容（坐标轴、图例、论文图上的小字
+    标注）被裁掉或放大失真。
+
+    可通过环境变量调整：
+      - ``KEN_BURNS_ZOOM_MAX``: 末帧缩放比例（默认 1.05，设 1.0 完全静态）
+      - ``KEN_BURNS_PAN_X``: 水平平移比例（默认 0.015）
+      - ``KEN_BURNS_PAN_Y``: 垂直平移比例（默认 0.008）
 
     Args:
         img: PIL.Image 对象
         duration: 显示时长（秒）
         target_size: 输出分辨率 (width, height)
+        zoom_end: 显式指定末帧缩放比例（覆盖 env，None 则用 env 默认）
+        pan_x_ratio: 显式指定水平平移比例（覆盖 env）
+        pan_y_ratio: 显式指定垂直平移比例（覆盖 env）
 
     Returns:
         moviepy VideoClip 对象
@@ -170,11 +180,30 @@ def _create_ken_burns_clip(img, duration, target_size=(1920, 1080)):
     canvas.paste(img_resized, (paste_x, paste_y))
     base_pil = canvas  # 保留 PIL 对象，避免每帧重复转换
 
-    # Ken Burns 参数：从 1.0x 缓慢 zoom-in 到 zoom_end
-    zoom_end = 1.08
-    # 平移方向：向图片中心偏右下缓慢移动
-    pan_x_ratio = 0.02  # 水平平移比例（相对于画面宽度）
-    pan_y_ratio = 0.01  # 垂直平移比例（相对于画面高度）
+    # Ken Burns 参数：从 1.0x 缓慢 zoom-in 到 zoom_end，默认 1.05（保守）
+    # 历史值 1.08 被反馈"图片放大字看不清"，下调到 1.05 仍保留动感但
+    # 末帧裁掉的边缘像素 < 5%，论文图上的小字基本不会丢失
+    def _env_float(key, default):
+        try:
+            v = os.environ.get(key)
+            return float(v) if v is not None else default
+        except (TypeError, ValueError):
+            return default
+
+    if zoom_end is None:
+        zoom_end = _env_float("KEN_BURNS_ZOOM_MAX", 1.05)
+    # 安全 clamp 到 [1.0, 1.2]，防止用户传过激值
+    zoom_end = max(1.0, min(1.2, zoom_end))
+
+    if pan_x_ratio is None:
+        pan_x_ratio = _env_float("KEN_BURNS_PAN_X", 0.015)
+    if pan_y_ratio is None:
+        pan_y_ratio = _env_float("KEN_BURNS_PAN_Y", 0.008)
+
+    # 当 zoom_end == 1.0 退化为静态展示，跳过逐帧 crop 提速并避免数值噪声
+    if zoom_end <= 1.0 + 1e-6 and abs(pan_x_ratio) < 1e-6 and abs(pan_y_ratio) < 1e-6:
+        static_arr = np.array(base_pil)
+        return ImageClip(static_arr).with_duration(duration)
 
     def make_frame(t):
         progress = t / max(duration, 0.01)

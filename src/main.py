@@ -222,12 +222,32 @@ if __name__ == "__main__":
                     print(f"Manim output: {manim_path}")
                     # 将 Manim 演示拼接到主视频前面
                     try:
-                        from moviepy import VideoFileClip, concatenate_videoclips
+                        from moviepy import (
+                            VideoFileClip, ColorClip, CompositeVideoClip,
+                            concatenate_videoclips,
+                        )
                         manim_clip = VideoFileClip(manim_path)
                         main_clip = VideoFileClip(path)
-                        # 统一分辨率：将 Manim 视频缩放到主视频尺寸
+                        # 统一分辨率：尺寸不一致时用居中黑边补齐而非拉伸放大，
+                        # 避免 720p Manim 被拉到 1080p 导致字体模糊。仅当 Manim
+                        # 比主视频小才放进黑底中央；如果反过来更大才允许下采样
+                        # （信息密度损失小）。
                         if manim_clip.size != main_clip.size:
-                            manim_clip = manim_clip.resized(main_clip.size)
+                            mw, mh = manim_clip.size
+                            tw, th = main_clip.size
+                            if mw <= tw and mh <= th:
+                                # contain：居中黑边，保持原始像素 1:1，不放大字体
+                                bg = ColorClip(size=(tw, th), color=(0, 0, 0),
+                                               duration=manim_clip.duration)
+                                if manim_clip.audio is not None:
+                                    bg = bg.with_audio(manim_clip.audio)
+                                manim_clip = CompositeVideoClip(
+                                    [bg, manim_clip.with_position("center")],
+                                    size=(tw, th),
+                                )
+                            else:
+                                # Manim 比主视频还大（罕见），下采样到主视频尺寸
+                                manim_clip = manim_clip.resized(main_clip.size)
                         combined = concatenate_videoclips([manim_clip, main_clip], method="compose")
                         # 写到项目 cache 下临时文件再原子覆盖, 避免 ffmpeg 同时读写 path 死锁
                         _proj_cache = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cache")
