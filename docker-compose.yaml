@@ -1,0 +1,166 @@
+###############################################################################
+# JushenRenji docker-compose
+#
+# 三个 service 共用同一个 image (target: base), 通过 entrypoint 子命令分发:
+#   - paper-video      : python src/main.py (paper -> manim video -> upload)
+#   - reply-comments   : python -m src.distribution.comments.cli (task #3)
+#   - fetch-stats      : python -m src.distribution.analytics.cli (task #4)
+#
+# 网络:
+#   - profile=default  -> bridge + host-gateway (推荐, 隔离干净)
+#   - profile=host-net -> network_mode: host    (省去 host.docker.internal)
+#
+# 用法示例:
+#   docker compose --profile default build
+#   docker compose --profile default run --rm paper-video --paper-link https://arxiv.org/abs/2602.11075 --platforms bilibili --manim
+#   docker compose --profile default run --rm reply-comments --platforms bilibili,xiaohongshu
+#   docker compose --profile default run --rm fetch-stats summary --days 7
+#
+# 切到 host 网络:
+#   docker compose --profile host-net run --rm paper-video-host ...
+###############################################################################
+
+# x-* anchors: 让三个 service 共享配置, 省去重复
+x-common-build: &common-build
+  context: .
+  dockerfile: Dockerfile
+  args:
+    SAU_REPO: ${SAU_REPO:-https://github.com/dreammis/social-auto-upload.git}
+    SAU_REF: ${SAU_REF:-main}
+
+x-common-volumes: &common-volumes
+  - ./cache:/app/cache
+  - ./output:/app/output
+  - ./data:/app/data
+  - ./pic:/app/pic
+  - ./config.yaml:/app/config.yaml:ro
+  # font 已 COPY 进镜像, 不必 mount; 用户自定义字体可 override:
+  # - ./font:/app/font:ro
+
+x-common-env: &common-env
+  # clash 走宿主机 7890 (linux 用 host.docker.internal:host-gateway)
+  HTTPS_PROXY: http://host.docker.internal:7890
+  HTTP_PROXY: http://host.docker.internal:7890
+  https_proxy: http://host.docker.internal:7890
+  http_proxy: http://host.docker.internal:7890
+  # DashScope 必须直连 (IPv6/proxy 都翻车), 见 MEMORY: project_gsjts_dashscope_ipv6
+  NO_PROXY: dashscope.aliyuncs.com,dashscope-cn.aliyuncs.com,localhost,127.0.0.1,::1,host.docker.internal
+  no_proxy: dashscope.aliyuncs.com,dashscope-cn.aliyuncs.com,localhost,127.0.0.1,::1,host.docker.internal
+  # 强制 IPv4 (DashScope websocket IPv6 静默超时)
+  PYTHONHASHSEED: "0"
+  # API keys 优先从 host env 注入, 否则 fallback 读 config.yaml
+  DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
+  LLM_API_KEY: ${LLM_API_KEY:-}
+  GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+  OPENCODE_MODEL: ${OPENCODE_MODEL:-}
+  # 飞书 (analytics 推送)
+  FEISHU_APP_ID: ${FEISHU_APP_ID:-}
+  FEISHU_APP_SECRET: ${FEISHU_APP_SECRET:-}
+  FEISHU_BASE_APP_TOKEN: ${FEISHU_BASE_APP_TOKEN:-}
+
+services:
+  # =========================================================================
+  # default profile: bridge network + host-gateway
+  # =========================================================================
+  paper-video:
+    profiles: ["default"]
+    image: jushenrenji:latest
+    build: *common-build
+    container_name: jushenrenji-paper-video
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment: *common-env
+    volumes: *common-volumes
+    # entrypoint 默认 dispatch -> 这里通过 command 指定子命令
+    command: ["paper-video"]
+    # 抖音 headed 需要 SHM (chromium 默认 64MB 太小, 渲染崩)
+    shm_size: "2gb"
+    stdin_open: true
+    tty: true
+
+  reply-comments:
+    profiles: ["default"]
+    image: jushenrenji:latest
+    build: *common-build
+    container_name: jushenrenji-reply-comments
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment: *common-env
+    volumes: *common-volumes
+    command: ["reply-comments"]
+    shm_size: "2gb"
+    stdin_open: true
+    tty: true
+
+  fetch-stats:
+    profiles: ["default"]
+    image: jushenrenji:latest
+    build: *common-build
+    container_name: jushenrenji-fetch-stats
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment: *common-env
+    volumes: *common-volumes
+    command: ["fetch-stats"]
+    shm_size: "2gb"
+    stdin_open: true
+    tty: true
+
+  # =========================================================================
+  # host-net profile: network_mode: host (Linux only)
+  # 与上面三个 service 共享 image, 不重新 build (depends_on=paper-video)
+  # =========================================================================
+  paper-video-host:
+    profiles: ["host-net"]
+    image: jushenrenji:latest
+    build: *common-build
+    container_name: jushenrenji-paper-video-host
+    network_mode: host
+    environment:
+      <<: *common-env
+      # host 网络下 host.docker.internal 不存在, 直接 127.0.0.1
+      HTTPS_PROXY: http://127.0.0.1:7890
+      HTTP_PROXY: http://127.0.0.1:7890
+      https_proxy: http://127.0.0.1:7890
+      http_proxy: http://127.0.0.1:7890
+    volumes: *common-volumes
+    command: ["paper-video"]
+    shm_size: "2gb"
+    stdin_open: true
+    tty: true
+
+  reply-comments-host:
+    profiles: ["host-net"]
+    image: jushenrenji:latest
+    build: *common-build
+    container_name: jushenrenji-reply-comments-host
+    network_mode: host
+    environment:
+      <<: *common-env
+      HTTPS_PROXY: http://127.0.0.1:7890
+      HTTP_PROXY: http://127.0.0.1:7890
+      https_proxy: http://127.0.0.1:7890
+      http_proxy: http://127.0.0.1:7890
+    volumes: *common-volumes
+    command: ["reply-comments"]
+    shm_size: "2gb"
+    stdin_open: true
+    tty: true
+
+  fetch-stats-host:
+    profiles: ["host-net"]
+    image: jushenrenji:latest
+    build: *common-build
+    container_name: jushenrenji-fetch-stats-host
+    network_mode: host
+    environment:
+      <<: *common-env
+      HTTPS_PROXY: http://127.0.0.1:7890
+      HTTP_PROXY: http://127.0.0.1:7890
+      https_proxy: http://127.0.0.1:7890
+      http_proxy: http://127.0.0.1:7890
+    volumes: *common-volumes
+    command: ["fetch-stats"]
+    shm_size: "2gb"
+    stdin_open: true
+    tty: true

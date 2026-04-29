@@ -1,0 +1,64 @@
+# === 大目录 / 运行时产物 ===
+cache/
+output/
+data/
+pic/
+media/
+paper/acmart_work/
+DeepSeek-OCR/
+node_modules/
+.venv/
+venv/
+worktrees/
+
+# === git / IDE / agent 产物 ===
+.git/
+.github/
+.claude/
+.agents/
+.pytest_cache/
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.egg
+*.egg-info/
+
+# === 视频 / 大文件 ===
+*.mp4
+*.mov
+*.mp3
+*.wav
+*TEMP_MPY_wvf_snd.*
+2026-*.mp4
+src/2026-*.mp4
+output/manim/media/
+
+# === 凭证 (绝对禁止烧进镜像) ===
+config.yaml
+cookies.json
+cookies*.json
+cache/douyin_cookies*.json
+bilibili_cookies.pkl
+
+# === 备份 / 临时 ===
+*.bak
+*.bak.*
+*.log
+tmp/
+cached_pdf.pdf
+2026-03-19-152827-local-command-caveatcaveat-the-messages-below-w.txt
+cc-switch-cli-linux-x64-musl.tar.gz
+skills-lock.json
+
+# === Docker 自身 ===
+Dockerfile
+docker-compose.yaml
+.dockerignore
+
+# === 其他 ===
+LESSONS_LEARNED.md
+docs/plans/
+package-lock.json
+thirdparty/edit-banana/models/
+thirdparty/edit-banana/sam3_src/
