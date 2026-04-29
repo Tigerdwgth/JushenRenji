@@ -7,6 +7,8 @@
 #   docker-entrypoint.sh reply-comments <args>   python -m src.distribution.comments.cli <args>
 #   docker-entrypoint.sh fetch-stats <args>      python -m src.distribution.analytics.cli <args>
 #   docker-entrypoint.sh sau <args>              third_party SAU venv passthrough
+#   docker-entrypoint.sh chromium-daemon         long-running CDP chromium
+#   docker-entrypoint.sh douyin-login [args]     QR code 扫码登录 (CDP attach)
 #   docker-entrypoint.sh bash                    debug shell
 #   docker-entrypoint.sh --help                  print this help
 #
@@ -32,6 +34,10 @@ Sub-commands:
                             Forwarded to: python -m src.distribution.comments.cli <args>
     fetch-stats <args>      Pull bilibili/xiaohongshu/douyin creator stats (task #4).
                             Forwarded to: python -m src.distribution.analytics.cli <args>
+    chromium-daemon         Long-running chromium with CDP for douyin upload/login.
+                            Forwarded to: python -m src.chromium_daemon
+    douyin-login [args]     Generate QR-code PNG via CDP daemon for first-time login.
+                            Forwarded to: python -m src.distribution.sau_helpers.douyin_login_qr
     sau <args>              Passthrough to social-auto-upload venv (e.g. headed login).
                             Forwarded to: third_party/social-auto-upload/.venv/bin/sau <args>
     bash                    Drop into an interactive shell for debugging.
@@ -116,6 +122,27 @@ main() {
             start_xvfb
             log "exec: python -m src.distribution.analytics.cli $*"
             exec python -m src.distribution.analytics.cli "$@"
+            ;;
+        chromium-daemon)
+            check_mounts
+            start_xvfb
+            local sau_venv="${SAU_VENV:-/app/third_party/social-auto-upload/.venv}"
+            if [[ ! -x "${sau_venv}/bin/python" ]]; then
+                fatal "SAU venv python not found at ${sau_venv}/bin/python"
+            fi
+            log "exec: ${sau_venv}/bin/python -m src.chromium_daemon"
+            export PYTHONPATH="/app:${PYTHONPATH:-}"
+            exec "${sau_venv}/bin/python" -m src.chromium_daemon
+            ;;
+        douyin-login)
+            check_mounts
+            local sau_venv="${SAU_VENV:-/app/third_party/social-auto-upload/.venv}"
+            if [[ ! -x "${sau_venv}/bin/python" ]]; then
+                fatal "SAU venv python not found at ${sau_venv}/bin/python"
+            fi
+            log "exec: ${sau_venv}/bin/python -m src.distribution.sau_helpers.douyin_login_qr $*"
+            export PYTHONPATH="/app:${PYTHONPATH:-}"
+            exec "${sau_venv}/bin/python" -m src.distribution.sau_helpers.douyin_login_qr "$@"
             ;;
         sau)
             check_mounts

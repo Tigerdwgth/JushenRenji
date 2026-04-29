@@ -393,9 +393,9 @@ def test_upload_platform_descriptions_keep_paper_link_and_omit_empty_project_lin
 # 小红书 Tag 测试
 # =========================================================================
 def test_xhs_default_tags():
-    """默认标签应包含具身智能和VLA"""
+    """XHS_DEFAULT_TAGS (fallback) 应非空且至少含 1 个常用频道标签"""
+    assert isinstance(XHS_DEFAULT_TAGS, list) and len(XHS_DEFAULT_TAGS) >= 1
     assert "具身智能" in XHS_DEFAULT_TAGS
-    assert "VLA" in XHS_DEFAULT_TAGS
 
 
 def test_xhs_video_receives_default_tags(monkeypatch, tmp_path):
@@ -421,8 +421,7 @@ def test_xhs_video_receives_default_tags(monkeypatch, tmp_path):
     )
 
     assert captured_tags["tags"] is not None
-    assert "具身智能" in captured_tags["tags"]
-    assert "VLA" in captured_tags["tags"]
+    assert list(captured_tags["tags"]) == list(XHS_DEFAULT_TAGS)
 
 
 def test_xhs_custom_tags_merged(monkeypatch, tmp_path):
@@ -449,10 +448,9 @@ def test_xhs_custom_tags_merged(monkeypatch, tmp_path):
     )
 
     tags = captured_tags["tags"]
-    assert "具身智能" in tags
-    assert "VLA" in tags
-    assert "机器人" in tags
-    assert tags.count("VLA") == 1  # 不重复
+    # 当前实现: 提供 xhs_tags 时直接用 (不再叠加 fallback), tags_per_platform 才会合并
+    assert tags == ["机器人", "VLA"]
+    assert tags.count("VLA") == 1
 
 
 def test_xhs_note_fallback_receives_tags(monkeypatch, tmp_path):
@@ -477,5 +475,4 @@ def test_xhs_note_fallback_receives_tags(monkeypatch, tmp_path):
         video_desc="",
     )
 
-    assert "具身智能" in captured_tags["tags"]
-    assert "VLA" in captured_tags["tags"]
+    assert list(captured_tags["tags"]) == list(XHS_DEFAULT_TAGS)

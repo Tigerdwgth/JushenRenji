@@ -57,8 +57,58 @@ x-common-env: &common-env
   FEISHU_APP_ID: ${FEISHU_APP_ID:-}
   FEISHU_APP_SECRET: ${FEISHU_APP_SECRET:-}
   FEISHU_BASE_APP_TOKEN: ${FEISHU_BASE_APP_TOKEN:-}
+  # CDP attach 模式: 抖音上传 / 评论回帖 / 扫码登录走 chromium-daemon
+  JSR_CHROMIUM_DAEMON_URL: http://chromium-daemon:9222
+  JSR_CHROMIUM_DAEMON_HEALTH_URL: http://chromium-daemon:9223
+  JSR_USE_CDP_DAEMON: "1"
+  # 小红书 MCP (docker-compose service name; 本机直跑回退 localhost)
+  XHS_MCP_URL: ${XHS_MCP_URL:-http://xhs-mcp:18060/mcp}
 
 services:
+  # =========================================================================
+  # chromium-daemon: 长跑 chromium 持有抖音登录态, 暴露 CDP 给上传/回帖/登录子进程
+  # =========================================================================
+  chromium-daemon:
+    profiles: ["default"]
+    image: jushenrenji:latest
+    build: *common-build
+    container_name: jushenrenji-chromium-daemon
+    command: ["chromium-daemon"]
+    environment: *common-env
+    volumes: *common-volumes
+    shm_size: "2gb"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:9223/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    ports:
+      - "127.0.0.1:9222:9222"  # CDP, 仅本机暴露
+      - "127.0.0.1:9223:9223"  # health, 仅本机暴露
+
+  # =========================================================================
+  # 小红书 MCP (docker 镜像 xpzouying/xiaohongshu-mcp, 监听 18060)
+  # paper-video / reply-comments 通过 docker bridge 访问 service name xhs-mcp
+  # =========================================================================
+  xhs-mcp:
+    profiles: ["default", "host-net"]
+    image: xpzouying/xiaohongshu-mcp:latest
+    container_name: jushenrenji-xhs-mcp
+    ports:
+      - "127.0.0.1:18060:18060"
+    volumes:
+      - ./tmp/xhs/data:/app/data
+      - ./tmp/xhs/images:/app/images
+    environment:
+      COOKIES_PATH: /app/data/cookies.json
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:18060/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
   # =========================================================================
   # default profile: bridge network + host-gateway
   # =========================================================================
@@ -71,6 +121,11 @@ services:
       - "host.docker.internal:host-gateway"
     environment: *common-env
     volumes: *common-volumes
+    depends_on:
+      chromium-daemon:
+        condition: service_healthy
+      xhs-mcp:
+        condition: service_healthy
     # entrypoint 默认 dispatch -> 这里通过 command 指定子命令
     command: ["paper-video"]
     # 抖音 headed 需要 SHM (chromium 默认 64MB 太小, 渲染崩)
@@ -87,6 +142,11 @@ services:
       - "host.docker.internal:host-gateway"
     environment: *common-env
     volumes: *common-volumes
+    depends_on:
+      chromium-daemon:
+        condition: service_healthy
+      xhs-mcp:
+        condition: service_healthy
     command: ["reply-comments"]
     shm_size: "2gb"
     stdin_open: true
@@ -123,6 +183,7 @@ services:
       HTTP_PROXY: http://127.0.0.1:7890
       https_proxy: http://127.0.0.1:7890
       http_proxy: http://127.0.0.1:7890
+      XHS_MCP_URL: http://127.0.0.1:18060/mcp
     volumes: *common-volumes
     command: ["paper-video"]
     shm_size: "2gb"
@@ -141,6 +202,7 @@ services:
       HTTP_PROXY: http://127.0.0.1:7890
       https_proxy: http://127.0.0.1:7890
       http_proxy: http://127.0.0.1:7890
+      XHS_MCP_URL: http://127.0.0.1:18060/mcp
     volumes: *common-volumes
     command: ["reply-comments"]
     shm_size: "2gb"
@@ -159,6 +221,7 @@ services:
       HTTP_PROXY: http://127.0.0.1:7890
       https_proxy: http://127.0.0.1:7890
       http_proxy: http://127.0.0.1:7890
+      XHS_MCP_URL: http://127.0.0.1:18060/mcp
     volumes: *common-volumes
     command: ["fetch-stats"]
     shm_size: "2gb"

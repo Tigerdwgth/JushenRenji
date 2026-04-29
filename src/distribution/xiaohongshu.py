@@ -28,8 +28,8 @@ from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
-# MCP 服务地址
-MCP_SERVER_URL = "http://localhost:18060/mcp"
+# MCP 服务地址 (容器场景下走 docker-compose service name; 本机直跑回退 localhost)
+MCP_SERVER_URL = os.environ.get("XHS_MCP_URL", "http://localhost:18060/mcp")
 
 # 项目根目录（从本文件向上4级）
 _FILE_DIR = os.path.dirname(os.path.abspath(__file__))

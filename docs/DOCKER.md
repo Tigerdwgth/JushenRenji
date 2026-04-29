@@ -88,6 +88,42 @@ scp cookies/douyin_xxx.json GSJts:~/Projects/VlogCutter/JushenRenji/cache/douyin
 
 ---
 
+## 3.4 小红书 MCP 自动启动
+
+`docker compose --profile default up -d` 会一键拉起 `xhs-mcp` 容器
+(镜像 `xpzouying/xiaohongshu-mcp`,监听 18060,只在本机回环暴露
+`127.0.0.1:18060`)。`paper-video` / `reply-comments` 通过 docker bridge
+网络以 service name `xhs-mcp` 互访,容器内环境变量
+`XHS_MCP_URL=http://xhs-mcp:18060/mcp` 已注入。
+
+挂载目录:
+```
+./tmp/xhs/data    -> /app/data    (cookies.json 写入位置, 持久化登录态)
+./tmp/xhs/images  -> /app/images  (上传图片中转目录)
+```
+
+首次扫码登录:
+```bash
+docker compose --profile default up -d xhs-mcp
+docker compose --profile default run --rm paper-video \
+    python -m src.distribution.xiaohongshu --login
+# 终端输出二维码图片路径, 用 macair 打开扫码即可
+```
+
+宿主机直跑(非 docker 场景)的 fallback:
+* 不设 `XHS_MCP_URL` 时,`src.distribution.xiaohongshu.MCP_SERVER_URL`
+  自动回退到 `http://localhost:18060/mcp`。
+* 仍可单独 `docker run -d -p 18060:18060 xpzouying/xiaohongshu-mcp:latest`
+  独立启动,与宿主机直跑的 paperagent venv 配合使用。
+
+健康检查:
+```bash
+curl -fsS http://127.0.0.1:18060/health
+docker compose ps xhs-mcp   # 看 STATUS 列是否 "(healthy)"
+```
+
+---
+
 ## 4. 运行
 
 ### 4.1 paper-video
