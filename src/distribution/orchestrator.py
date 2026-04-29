@@ -19,13 +19,23 @@ except Exception as exc:
     _upload_xiaohongshu_video_impl = None
     _XHS_IMPORT_ERROR = exc
 
+try:
+    from .douyin import upload as _upload_douyin_impl
+    _DOUYIN_IMPORT_ERROR = None
+except Exception as exc:
+    _upload_douyin_impl = None
+    _DOUYIN_IMPORT_ERROR = exc
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_PLATFORMS = ["bilibili", "xiaohongshu"]
-VALID_PLATFORMS = set(DEFAULT_PLATFORMS)
+# 抖音不在默认平台里 - 需要 cookie + SAU venv, 调用方主动指定 --platforms 才启用
+VALID_PLATFORMS = set(DEFAULT_PLATFORMS) | {"douyin"}
 
-# 小红书默认话题标签
-XHS_DEFAULT_TAGS = ["具身智能", "VLA"]
+# 小红书 fallback 标签：仅在动态生成 + 显式 xhs_tags 都没有时才用
+XHS_FALLBACK_TAGS = ["具身智能", "AI论文笔记", "前沿科技"]
+# 兼容老调用：保留旧符号（指向 fallback）
+XHS_DEFAULT_TAGS = XHS_FALLBACK_TAGS
 XHS_CONTENT_LIMIT = 300
 BILIBILI_DESC_LIMIT = 250
 XHS_SUMMARY_LIMIT = 90
@@ -48,6 +58,12 @@ def upload_xiaohongshu_video(*args, **kwargs):
     if _upload_xiaohongshu_video_impl is None:
         raise RuntimeError("小红书上传依赖未安装") from _XHS_IMPORT_ERROR
     return _upload_xiaohongshu_video_impl(*args, **kwargs)
+
+
+def upload_douyin(*args, **kwargs):
+    if _upload_douyin_impl is None:
+        raise RuntimeError("抖音上传依赖未安装") from _DOUYIN_IMPORT_ERROR
+    return _upload_douyin_impl(*args, **kwargs)
 
 
 def parse_platforms(raw_platforms: Optional[str]) -> List[str]:
@@ -233,6 +249,7 @@ def upload_generated_content(
     project_links: Optional[List[str]] = None,
     bilibili_tid: int = 188,
     xhs_tags: Optional[List[str]] = None,
+    tags_per_platform: Optional[Dict[str, List[str]]] = None,
 ) -> Dict[str, Dict[str, object]]:
     """
     Upload generated assets to selected platforms.
@@ -253,10 +270,13 @@ def upload_generated_content(
                 paper_links=paper_links,
                 project_links=project_links,
             )
+            bili_tags_used = video_tags
+            if tags_per_platform and tags_per_platform.get("bilibili"):
+                bili_tags_used = tags_per_platform["bilibili"]
             bv_id = upload_bilibili(
                 video_path=video_path,
                 title=video_title,
-                tags=video_tags,
+                tags=bili_tags_used,
                 desc=bili_desc,
                 cover_path=cover_path,
                 tid=bilibili_tid,
@@ -279,12 +299,18 @@ def upload_generated_content(
             paper_links=paper_links,
             project_links=project_links,
         )
-        # 合并默认标签和自定义标签（去重保序）
-        final_tags = list(XHS_DEFAULT_TAGS)
-        if xhs_tags:
-            for t in xhs_tags:
-                if t not in final_tags:
-                    final_tags.append(t)
+        # 关键词优先级: tags_per_platform.xiaohongshu > xhs_tags > XHS_FALLBACK_TAGS
+        if tags_per_platform and tags_per_platform.get("xiaohongshu"):
+            final_tags = list(tags_per_platform["xiaohongshu"])
+            # 老调用方传的 xhs_tags 也合并进去（去重保序）
+            if xhs_tags:
+                for t in xhs_tags:
+                    if t not in final_tags:
+                        final_tags.append(t)
+        elif xhs_tags:
+            final_tags = list(xhs_tags)
+        else:
+            final_tags = list(XHS_FALLBACK_TAGS)
 
         # 优先尝试视频上传，失败则降级为图文上传
         video_uploaded = False
@@ -326,5 +352,37 @@ def upload_generated_content(
             except Exception as exc:
                 logger.exception("小红书图文上传失败")
                 results["xiaohongshu"] = {"ok": False, "error": str(exc)}
+
+    if "douyin" in platforms:
+        try:
+            if not video_path or not os.path.exists(video_path):
+                raise FileNotFoundError(f"视频文件不存在: {video_path}")
+            # 关键词路由: tags_per_platform.douyin > 兜底转换 video_tags
+            if tags_per_platform and tags_per_platform.get("douyin"):
+                dy_tags = list(tags_per_platform["douyin"])
+            else:
+                # 抖音 fallback: 从 video_tags(B站逗号串)取前 5 个
+                if isinstance(video_tags, str):
+                    dy_tags = [t.strip() for t in video_tags.split(",") if t.strip()][:5]
+                elif isinstance(video_tags, (list, tuple)):
+                    dy_tags = list(video_tags)[:5]
+                else:
+                    dy_tags = []
+            # 抖音标题上限约 30 字符, 这里软裁剪保险
+            dy_title = (video_title or "")[:30]
+            ret = upload_douyin(
+                video_path=video_path,
+                title=dy_title,
+                tags=dy_tags,
+                cover_path=cover_path,
+                desc=video_desc,
+            )
+            if ret:
+                results["douyin"] = {"ok": True, "id": ret}
+            else:
+                results["douyin"] = {"ok": False, "error": "上传返回空结果"}
+        except Exception as exc:
+            logger.exception("抖音上传失败")
+            results["douyin"] = {"ok": False, "error": str(exc)}
 
     return results

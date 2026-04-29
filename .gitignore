@@ -30,3 +30,27 @@ cc-switch-cli-linux-x64-musl.tar.gz
 2026-03-19-152827-local-command-caveatcaveat-the-messages-below-w.txt
 cached_pdf.pdf
 *TEMP_MPY_wvf_snd.mp3
+
+# Edit Banana model weights (too large for git)
+thirdparty/edit-banana/models/sam3_ms/
+thirdparty/edit-banana/models/cache/
+thirdparty/edit-banana/sam3_src/
+
+
+# 抖音 / SAU 凭证, 绝对禁止上传
+cache/douyin_cookies*.json
+cookies.json
+cookies.fresh.json
+cookies.broken.json
+
+# 自动 backup 文件
+*.bak
+*.bak.*
+
+# 大文件 / 编译中间产物
+media/
+paper/acmart_work/
+*TEMP_MPY_wvf_snd.mp4
+src/2026-*.mp4
+2026-*.mp4
+output/manim/media/

@@ -537,6 +537,44 @@ python -m pytest tests/ -v
 
 ---
 
+## 待实现功能 (Roadmap)
+
+> 已规划 / 进行中的功能，详见 issue 与 task 列表。
+
+### 1. 抖音分发模块（首次登录需人工扫码 + 待 e2e 验证）
+- ✅ 已接入 [`dreammis/social-auto-upload`](https://github.com/dreammis/social-auto-upload) (Playwright 路线)
+- ✅ `distribution/douyin.py` 实现 subprocess 调用 SAU venv 上传
+- ✅ `orchestrator.py` 加 `douyin` 到 `VALID_PLATFORMS` + tags_per_platform 路由
+- ✅ 关键词 fallback: B站逗号串取前 5 个 / 标题硬裁剪到 30 字
+- ⏳ 首次扫码登录: 需在 macair 跑 SAU headed 流程, cookie 落 `cache/douyin_cookies.json`
+- ⏳ e2e 待用真实视频跑一次实测 (orchestrator routing + helper 通讯已 unit 验证)
+
+### 2. 三平台评论自动回复
+- `distribution/comments/{bilibili,xhs,douyin}_comments.py`
+  - B站走 `bilibili-api-python` 的 `comment.send_comment / get_comments_lazy` (官方接口最稳)
+  - 小红书走 `xhs` 库的 `comment_note / comment_user / get_note_all_comments`
+  - 抖音 Playwright 复用 SAU storage_state，自定义 page action
+- `distribution/comments/reply_engine.py` — 统一 LLM 回复生成（活泼互动人设）+ 节流 + 已回复去重
+- 入口 `main.py --reply-comments`，由 cron 每小时随机分钟触发，防风控
+- 每平台日上限：B站 50 / 小红书 15 / 抖音 20
+
+### 3. 创作者中心数据聚合
+- Playwright 抓取每个平台创作者中心已聚合好的 dashboard 数据
+  - B站：`member.bilibili.com/play-data`
+  - 小红书：`creator.xiaohongshu.com/data-center`
+  - 抖音：`creator.douyin.com/creator-micro/data`
+- 存 sqlite `data/creator_stats.db` (schema: platform/post_id/date/views/likes/comments/shares/favorites)
+- 推送到飞书多维表格（复用 `lark-base` skill），CLI 也输出汇总
+- 每天定点跑一次（创作者中心数据 T-1 更新），不回溯历史
+
+### 4. Docker 化
+- Dockerfile (基于 paperagent conda env) + docker-compose.yaml
+- Playwright cookie / storage_state 通过 volume mount 持久化
+- 代理分流：容器内 `host.docker.internal:7890` 走宿主机 clash，DashScope 仍走 NO_PROXY 直连
+- entrypoint 支持子命令：`paper-video`（生成上传）/ `reply-comments` / `fetch-stats`
+
+---
+
 ## 贡献
 
 欢迎任何形式的贡献！请提交问题或拉取请求。

@@ -763,3 +763,142 @@ def select_top_images(items: list, scores: list, top_n: int = 5) -> list:
     indexed.sort(key=lambda x: x[1], reverse=True)
     top_indices = sorted([idx for idx, _ in indexed[:top_n]])
     return [items[i] for i in top_indices]
+
+
+# ---------------------------------------------------------------------------
+# Video tags (B站 / 小红书 / 抖音 三平台关键词)
+# ---------------------------------------------------------------------------
+
+# LLM 失败时的兜底 tag（仅在生成失败 / 输入为空时返回）
+_FALLBACK_VIDEO_TAGS = {
+    "bilibili": ["具身智能", "VLA", "机器人", "AI论文", "大模型",
+                 "前沿科技", "arXiv", "论文解读"],
+    "xiaohongshu": ["具身智能", "AI论文笔记", "前沿科技", "机器人", "VLA"],
+    "douyin": ["具身智能", "AI论文", "机器人"],
+}
+
+# tag 中需要剔除的违禁宣传词（与 prompts 里的硬约束保持一致）
+_BANNED_TAG_WORDS = (
+    "首次", "首个", "突破", "震撼", "最新", "颠覆", "革命", "最强",
+)
+
+# tag 字符过滤：去掉空白、各种括号/标点/特殊符号
+_TAG_STRIP_RE = re.compile(
+    r"[#\s\[\](){}<>《》【】\"\'`,，。.!！?？：:;；…—\-_/\\|]+"
+)
+
+
+def _sanitize_tag(tag, max_len: int = 8) -> str:
+    """清理单个 tag：去空白/标点/特殊符号/截断。返回空串表示无效。"""
+    if not tag:
+        return ""
+    s = str(tag).strip()
+    s = _TAG_STRIP_RE.sub("", s)
+    if not s:
+        return ""
+    # 含违禁宣传词的 tag 整个丢弃
+    for w in _BANNED_TAG_WORDS:
+        if w in s:
+            return ""
+    if len(s) > max_len:
+        s = s[:max_len]
+    return s
+
+
+def _normalize_tag_list(tags, limit: int, max_len: int = 8) -> list:
+    """规范化一组 tag：sanitize + 去重保序 + 截到 limit 个。"""
+    seen = set()
+    result = []
+    for t in tags or []:
+        clean = _sanitize_tag(t, max_len=max_len)
+        if not clean or clean in seen:
+            continue
+        seen.add(clean)
+        result.append(clean)
+        if len(result) >= limit:
+            break
+    return result
+
+
+def _normalize_tags_dict(tags) -> dict:
+    """规范化三平台 tag dict；任一平台清洗后为空则用 fallback 兜底。"""
+    if not isinstance(tags, dict):
+        tags = {}
+    bili = _normalize_tag_list(tags.get("bilibili", []),
+                               limit=12, max_len=10)
+    xhs = _normalize_tag_list(tags.get("xiaohongshu", []),
+                              limit=8, max_len=10)
+    dy = _normalize_tag_list(tags.get("douyin", []),
+                             limit=5, max_len=8)
+    if not bili:
+        bili = list(_FALLBACK_VIDEO_TAGS["bilibili"])
+    if not xhs:
+        xhs = list(_FALLBACK_VIDEO_TAGS["xiaohongshu"])
+    if not dy:
+        dy = list(_FALLBACK_VIDEO_TAGS["douyin"])
+    return {"bilibili": bili, "xiaohongshu": xhs, "douyin": dy}
+
+
+def generate_video_tags(cn_title: str = "", en_title: str = "",
+                         abstract: str = "") -> dict:
+    """为单篇论文生成 B站/小红书/抖音 三平台关键词。
+
+    Args:
+        cn_title: 中文标题（generate_video_title 的输出）
+        en_title: 英文论文标题
+        abstract: 论文摘要（前 600 字会被截取喂给 LLM）
+
+    Returns:
+        dict: {"bilibili": [...], "xiaohongshu": [...], "douyin": [...]}
+
+        - bilibili: 8-12 个，逗号分隔后写入 B站 set_tag
+        - xiaohongshu: 5-8 个，传入 publish_video/note 的 tags 参数
+        - douyin: 3-5 个，抖音上传时拼成 #tag# 用
+
+    永不抛异常：LLM 失败 / 输入为空 / JSON 解析失败 都返回 fallback。
+    """
+    paper_meta = []
+    if cn_title:
+        paper_meta.append(f"中文标题: {cn_title}")
+    if en_title:
+        paper_meta.append(f"英文标题: {en_title}")
+    if abstract:
+        paper_meta.append(f"摘要(节选): {abstract[:600]}")
+    paper_text = "\n".join(paper_meta)
+
+    if not paper_text.strip():
+        logging.warning("generate_video_tags: 输入为空, 返回 fallback")
+        return _normalize_tags_dict({})
+
+    prompt = prompts_dict.get("generate_video_tags", "")
+    if not prompt:
+        logging.warning("generate_video_tags: prompt 缺失, 返回 fallback")
+        return _normalize_tags_dict({})
+
+    try:
+        raw = create_chat_completion(prompt + paper_text)
+        parsed = _parse_json_response(raw)
+        if not isinstance(parsed, dict):
+            raise ValueError(f"LLM 返回非 dict: {type(parsed).__name__}")
+        normalized = _normalize_tags_dict(parsed)
+        logging.info("generate_video_tags 生成成功: %s", normalized)
+        return normalized
+    except Exception as e:
+        logging.warning("generate_video_tags 失败, 使用 fallback: %s", e)
+        return _normalize_tags_dict({})
+
+
+def merge_video_tags(tag_dicts) -> dict:
+    """把多篇论文的 tag dict 合并成一份（多论文日报场景使用）。
+
+    保序去重：先来的论文权重更高 → 各平台先放第一篇的全部，再追加后续篇里
+    没出现过的；最后再走 _normalize_tags_dict 走一次硬约束（数量、长度）。
+    """
+    merged = {"bilibili": [], "xiaohongshu": [], "douyin": []}
+    for td in tag_dicts or []:
+        if not isinstance(td, dict):
+            continue
+        for k in merged:
+            for t in td.get(k, []):
+                merged[k].append(t)
+    return _normalize_tags_dict(merged)

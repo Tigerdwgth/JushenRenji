@@ -220,56 +220,21 @@ if __name__ == "__main__":
                 if manim_path:
                     logging.info("Manim 演示视频已生成: %s", manim_path)
                     print(f"Manim output: {manim_path}")
-                    # 将 Manim 演示拼接到主视频前面
+                    # 只保留 Manim 版本: 用 ffmpeg copy 把 manim_path remux 到 path 位置
+                    # (含 +faststart, 满足 B站/小红书/抖音流式播放要求)
+                    # 之前的 manim+main 拼接已废弃: 用户反馈不需要主视频片段
                     try:
-                        from moviepy import (
-                            VideoFileClip, ColorClip, CompositeVideoClip,
-                            concatenate_videoclips,
-                        )
-                        manim_clip = VideoFileClip(manim_path)
-                        main_clip = VideoFileClip(path)
-                        # 统一分辨率：尺寸不一致时用居中黑边补齐而非拉伸放大，
-                        # 避免 720p Manim 被拉到 1080p 导致字体模糊。仅当 Manim
-                        # 比主视频小才放进黑底中央；如果反过来更大才允许下采样
-                        # （信息密度损失小）。
-                        if manim_clip.size != main_clip.size:
-                            mw, mh = manim_clip.size
-                            tw, th = main_clip.size
-                            if mw <= tw and mh <= th:
-                                # contain：居中黑边，保持原始像素 1:1，不放大字体
-                                bg = ColorClip(size=(tw, th), color=(0, 0, 0),
-                                               duration=manim_clip.duration)
-                                if manim_clip.audio is not None:
-                                    bg = bg.with_audio(manim_clip.audio)
-                                manim_clip = CompositeVideoClip(
-                                    [bg, manim_clip.with_position("center")],
-                                    size=(tw, th),
-                                )
-                            else:
-                                # Manim 比主视频还大（罕见），下采样到主视频尺寸
-                                manim_clip = manim_clip.resized(main_clip.size)
-                        combined = concatenate_videoclips([manim_clip, main_clip], method="compose")
-                        # 写到项目 cache 下临时文件再原子覆盖, 避免 ffmpeg 同时读写 path 死锁
+                        import subprocess as _sp
                         _proj_cache = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cache")
                         os.makedirs(_proj_cache, exist_ok=True)
-                        combined_tmp = os.path.join(_proj_cache, os.path.basename(path) + ".combined_tmp.mp4")
-                        combined.write_videofile(combined_tmp, codec="libx264", preset="ultrafast",
-                                                 audio_codec="aac", logger=None)
-                        manim_clip.close()
-                        main_clip.close()
-                        combined.close()
-                        os.replace(combined_tmp, path)
-                        combined_path = path
-                        # faststart remux so moov box is at the front (required for XHS streaming)
-                        import subprocess as _sp
-                        fs_path = combined_path + ".fs.mp4"
+                        manim_only_tmp = os.path.join(_proj_cache, os.path.basename(path) + ".manim_only_tmp.mp4")
                         _sp.check_call(["/usr/bin/ffmpeg", "-v", "warning", "-y",
-                                        "-i", combined_path, "-c", "copy",
-                                        "-movflags", "+faststart", fs_path])
-                        os.replace(fs_path, combined_path)
-                        logging.info("Manim 演示已合并到主视频 (+faststart): %s", combined_path)
+                                        "-i", manim_path, "-c", "copy",
+                                        "-movflags", "+faststart", manim_only_tmp])
+                        os.replace(manim_only_tmp, path)
+                        logging.info("仅保留 Manim 版本 (+faststart): %s", path)
                     except Exception as e:
-                        logging.warning("Manim 视频合并失败，将单独保留: %s", e)
+                        logging.warning("Manim 替换主视频失败，保留主视频作为兜底: %s", e)
                 else:
                     logging.error("Manim 演示视频生成失败")
             else:
@@ -285,7 +250,26 @@ if __name__ == "__main__":
         if len(video_title) > 78:
             video_title = video_title[:77] + "…"
             logging.info("标题截断为80字符以内: %s", video_title)
-        video_tags = "人工智能,具身智能,机器人,模仿学习,强化学习,自动驾驶,具身人机"
+        # 关键词改为每篇论文 LLM 动态生成（多论文日报合并去重）
+        tags_per_platform = None
+        try:
+            from src.llm_tools.llm_agent import generate_video_tags, merge_video_tags
+            tag_dicts = []
+            for _i, _en_t in enumerate(titles):
+                tag_dicts.append(generate_video_tags(
+                    cn_title=cn_titles[_i] if _i < len(cn_titles) else "",
+                    en_title=_en_t,
+                    abstract=summaries[_i] if _i < len(summaries) else "",
+                ))
+            tags_per_platform = merge_video_tags(tag_dicts) if len(tag_dicts) > 1 else (tag_dicts[0] if tag_dicts else None)
+            logging.info("生成关键词: %s", tags_per_platform)
+        except Exception as _tag_e:
+            logging.warning("关键词动态生成失败, 走 orchestrator 兜底: %s", _tag_e)
+        # B站需要 str (逗号分隔), 优先用动态 tags 的 bilibili 列表
+        if tags_per_platform and tags_per_platform.get("bilibili"):
+            video_tags = ",".join(tags_per_platform["bilibili"])
+        else:
+            video_tags = "具身智能,VLA,机器人,AI论文,大模型,前沿科技,arXiv"
         video_desc = "\n".join(titles)
         try:
             base_mp4 = os.path.splitext(path)[0]
@@ -316,6 +300,7 @@ if __name__ == "__main__":
                 paper_links=paper_links,
                 project_links=project_links,
                 bilibili_tid=188,
+                tags_per_platform=tags_per_platform,
             )
             logging.info("上传结果汇总: %s", upload_results)
         else:

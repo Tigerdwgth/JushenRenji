@@ -150,3 +150,152 @@ def test_generate_video_title_removes_exaggerated_words():
     assert "首次" not in result
     assert "突破" not in result
     assert result
+
+
+# ---------------------------------------------------------------------------
+# generate_video_tags 三平台关键词生成测试
+# ---------------------------------------------------------------------------
+def test_sanitize_tag_basic():
+    """sanitize 应去除标点、空格、#号"""
+    from src.llm_tools.llm_agent import _sanitize_tag
+    assert _sanitize_tag("具身智能") == "具身智能"
+    assert _sanitize_tag("# 具身智能 ") == "具身智能"
+    assert _sanitize_tag("VLA, ") == "VLA"
+    assert _sanitize_tag("机器人(操作)") == "机器人操作"
+    assert _sanitize_tag("") == ""
+    assert _sanitize_tag(None) == ""
+
+
+def test_sanitize_tag_banned_words_dropped():
+    """含'首次/突破/震撼/颠覆'等违禁词的 tag 整个丢弃"""
+    from src.llm_tools.llm_agent import _sanitize_tag
+    assert _sanitize_tag("首次发布") == ""
+    assert _sanitize_tag("突破性方法") == ""
+    assert _sanitize_tag("震撼登场") == ""
+    assert _sanitize_tag("颠覆AI") == ""
+
+
+def test_sanitize_tag_max_len():
+    """超过 max_len 应截断"""
+    from src.llm_tools.llm_agent import _sanitize_tag
+    assert _sanitize_tag("VeryLongTagWord", max_len=8) == "VeryLong"
+    assert _sanitize_tag("具身智能技术", max_len=4) == "具身智能"
+
+
+def test_normalize_tag_list_dedup_and_clamp():
+    """normalize 应去重并截到 limit"""
+    from src.llm_tools.llm_agent import _normalize_tag_list
+    result = _normalize_tag_list(
+        ["VLA", "具身智能", "VLA", "机器人", "AI论文", "VLA", "大模型"],
+        limit=3,
+    )
+    assert result == ["VLA", "具身智能", "机器人"]
+
+
+def test_normalize_tags_dict_empty_falls_back():
+    """空 dict 输入应返回 fallback"""
+    from src.llm_tools.llm_agent import _normalize_tags_dict, _FALLBACK_VIDEO_TAGS
+    out = _normalize_tags_dict({})
+    assert set(out) == {"bilibili", "xiaohongshu", "douyin"}
+    assert out["bilibili"] == _FALLBACK_VIDEO_TAGS["bilibili"]
+
+
+def test_normalize_tags_dict_clamps_each_platform():
+    """每个平台超额都应 clamp 到各自 limit"""
+    from src.llm_tools.llm_agent import _normalize_tags_dict
+    huge = ["t" + str(i) for i in range(50)]
+    out = _normalize_tags_dict({
+        "bilibili": huge, "xiaohongshu": huge, "douyin": huge,
+    })
+    assert len(out["bilibili"]) == 12
+    assert len(out["xiaohongshu"]) == 8
+    assert len(out["douyin"]) == 5
+
+
+def test_generate_video_tags_happy_path():
+    """LLM 返回合法 JSON 时应正确解析三平台关键词"""
+    fake_resp = (
+        '{"bilibili": ["VLA", "具身智能", "机器人", "AI论文", "Diffusion", "大模型", "前沿科技", "arXiv"], '
+        '"xiaohongshu": ["VLA", "AI论文笔记", "机器人", "前沿科技", "具身"], '
+        '"douyin": ["VLA", "黑科技", "AI"]}'
+    )
+    with patch("src.llm_tools.llm_agent.create_chat_completion",
+               return_value=fake_resp):
+        from src.llm_tools.llm_agent import generate_video_tags
+        result = generate_video_tags(
+            cn_title="VLA: 视觉-语言-动作模型",
+            en_title="Vision-Language-Action: A Foundation Model",
+            abstract="We propose VLA, a foundation model that ...",
+        )
+    assert "bilibili" in result and "xiaohongshu" in result and "douyin" in result
+    assert "VLA" in result["bilibili"]
+    assert 8 <= len(result["bilibili"]) <= 12
+    assert 5 <= len(result["xiaohongshu"]) <= 8
+    assert 3 <= len(result["douyin"]) <= 5
+
+
+def test_generate_video_tags_filters_exaggerated_words():
+    """LLM 即使返回违禁词也应被过滤"""
+    fake_resp = (
+        '{"bilibili": ["VLA", "首次提出", "突破性", "机器人", "AI论文", "大模型"], '
+        '"xiaohongshu": ["颠覆AI", "AI论文笔记", "VLA"], '
+        '"douyin": ["震撼", "黑科技", "AI"]}'
+    )
+    with patch("src.llm_tools.llm_agent.create_chat_completion",
+               return_value=fake_resp):
+        from src.llm_tools.llm_agent import generate_video_tags
+        result = generate_video_tags(cn_title="t", en_title="t", abstract="x")
+    flat = result["bilibili"] + result["xiaohongshu"] + result["douyin"]
+    for banned in ("首次提出", "突破性", "颠覆AI", "震撼"):
+        assert banned not in flat, f"违禁词 {banned} 应被过滤"
+
+
+def test_generate_video_tags_invalid_json_fallback():
+    """LLM 返回非 JSON 应 fallback 而不抛"""
+    with patch("src.llm_tools.llm_agent.create_chat_completion",
+               return_value="这不是 JSON 而是闲话"):
+        from src.llm_tools.llm_agent import generate_video_tags, _FALLBACK_VIDEO_TAGS
+        result = generate_video_tags(cn_title="t", en_title="t", abstract="x")
+    assert result["bilibili"] == _FALLBACK_VIDEO_TAGS["bilibili"]
+
+
+def test_generate_video_tags_empty_input_fallback():
+    """全空输入直接 fallback，不调 LLM"""
+    from src.llm_tools.llm_agent import generate_video_tags, _FALLBACK_VIDEO_TAGS
+    # 不 mock LLM，但应该不会被调用
+    with patch("src.llm_tools.llm_agent.create_chat_completion") as mock_llm:
+        result = generate_video_tags(cn_title="", en_title="", abstract="")
+    assert mock_llm.call_count == 0
+    assert result["bilibili"] == _FALLBACK_VIDEO_TAGS["bilibili"]
+
+
+def test_generate_video_tags_llm_exception_fallback():
+    """LLM 抛异常时也应 fallback"""
+    with patch("src.llm_tools.llm_agent.create_chat_completion",
+               side_effect=RuntimeError("boom")):
+        from src.llm_tools.llm_agent import generate_video_tags, _FALLBACK_VIDEO_TAGS
+        result = generate_video_tags(cn_title="t", en_title="t", abstract="x")
+    assert result["bilibili"] == _FALLBACK_VIDEO_TAGS["bilibili"]
+
+
+def test_merge_video_tags_dedup_order():
+    """多篇论文 tag 合并保序去重"""
+    from src.llm_tools.llm_agent import merge_video_tags
+    result = merge_video_tags([
+        {"bilibili": ["VLA", "具身智能"], "xiaohongshu": ["AI论文笔记"], "douyin": ["机器人"]},
+        {"bilibili": ["VLA", "Diffusion", "大模型"], "xiaohongshu": ["AI论文笔记", "前沿科技"], "douyin": ["AI"]},
+    ])
+    # VLA 在前，去重后只出现一次
+    assert result["bilibili"][0] == "VLA"
+    assert result["bilibili"].count("VLA") == 1
+    assert "Diffusion" in result["bilibili"]
+    # xiaohongshu / douyin 同理
+    assert result["xiaohongshu"][0] == "AI论文笔记"
+    assert "前沿科技" in result["xiaohongshu"]
+
+
+def test_merge_video_tags_empty_returns_fallback():
+    """空列表合并返回 fallback"""
+    from src.llm_tools.llm_agent import merge_video_tags, _FALLBACK_VIDEO_TAGS
+    result = merge_video_tags([])
+    assert result["bilibili"] == _FALLBACK_VIDEO_TAGS["bilibili"]
