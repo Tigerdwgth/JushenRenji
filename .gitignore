@@ -54,3 +54,9 @@ paper/acmart_work/
 src/2026-*.mp4
 2026-*.mp4
 output/manim/media/
+
+# creator analytics sqlite (Task #3)
+data/creator_stats.db
+data/creator_stats.db-journal
+data/creator_stats.db-shm
+data/creator_stats.db-wal

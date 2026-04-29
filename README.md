@@ -549,29 +549,75 @@ python -m pytest tests/ -v
 - ⏳ 首次扫码登录: 需在 macair 跑 SAU headed 流程, cookie 落 `cache/douyin_cookies.json`
 - ⏳ e2e 待用真实视频跑一次实测 (orchestrator routing + helper 通讯已 unit 验证)
 
-### 2. 三平台评论自动回复
-- `distribution/comments/{bilibili,xhs,douyin}_comments.py`
-  - B站走 `bilibili-api-python` 的 `comment.send_comment / get_comments_lazy` (官方接口最稳)
-  - 小红书走 `xhs` 库的 `comment_note / comment_user / get_note_all_comments`
-  - 抖音 Playwright 复用 SAU storage_state，自定义 page action
-- `distribution/comments/reply_engine.py` — 统一 LLM 回复生成（活泼互动人设）+ 节流 + 已回复去重
-- 入口 `main.py --reply-comments`，由 cron 每小时随机分钟触发，防风控
-- 每平台日上限：B站 50 / 小红书 15 / 抖音 20
+### 2. 三平台评论自动回复 (代码已落地, 等 e2e 验证)
+- ✅ `src/distribution/comments/{bilibili,xhs,douyin}_comments.py` adapter
+  - B站走 `bilibili-api-python` 的 `comment.send_comment / get_comments_lazy`
+  - 小红书走 `xhs` 库 (SAU venv subprocess) 的 `get_note_all_comments / comment_user`
+  - 抖音走 Playwright headed (Xvfb :99) + SAU storage_state, keyword-based locator
+- ✅ `reply_engine.py` 统一 LLM 回复生成 (活泼互动人设, 三层兜底)
+- ✅ `replied_db.py` sqlite 去重 + 节流计数 (B站 50 / 小红书 15 / 抖音 20 日上限)
+- ✅ `cli.py` 入口 + `tmp/run_reply_comments.sh` cron @hourly 触发脚本
+- ⏳ 首跑前需在 `cache/post_ids.json` 写入 video → BV/note_id/aweme_url 映射
+- ⏳ e2e 待真实评论场景跑一次 (单测全部 mock)
+
+**使用方式**:
+```bash
+# (1) 写好 cache/post_ids.json 映射 (key 用 arxiv_id 或 video_path)
+# (2) dry-run 检查
+python -m src.distribution.comments.cli \
+    --platforms bilibili,xiaohongshu,douyin \
+    --max-posts 10 --since-hours 72 --dry-run
+# (3) 真实发布
+python -m src.distribution.comments.cli --no-dry-run --platforms bilibili
+# (4) cron @hourly 自动跑 (默认 dry-run, 改 sh 里的 --no-dry-run)
+0 * * * * /home/jdh/Projects/VlogCutter/JushenRenji/tmp/run_reply_comments.sh
+```
 
 ### 3. 创作者中心数据聚合
-- Playwright 抓取每个平台创作者中心已聚合好的 dashboard 数据
-  - B站：`member.bilibili.com/play-data`
-  - 小红书：`creator.xiaohongshu.com/data-center`
-  - 抖音：`creator.douyin.com/creator-micro/data`
-- 存 sqlite `data/creator_stats.db` (schema: platform/post_id/date/views/likes/comments/shares/favorites)
-- 推送到飞书多维表格（复用 `lark-base` skill），CLI 也输出汇总
-- 每天定点跑一次（创作者中心数据 T-1 更新），不回溯历史
+- ✅ 模块 `src/distribution/analytics/` 已落地
+  - `bilibili_stats.py` — 走 `bilibili_api.video.Video.get_info().stat`，无需 Playwright
+  - `xhs_stats.py` — subprocess 调 SAU venv 里的 `xhs.XhsClient.get_note_by_id`
+  - `douyin_stats.py` — Playwright Xvfb headed 抓 `creator.douyin.com/creator-micro/data` 的 XHR JSON，DOM 兜底解析作品管理页
+  - `stats_store.py` — sqlite (`data/creator_stats.db`) + ASCII summary 表
+  - `cli.py` — `python -m src.distribution.analytics.cli {fetch,summary}`，cron 友好
+- ✅ schema: `(platform, post_id, fetch_date)` 复合主键 / views / likes / comments / shares / favorites / title / raw_json
+- ✅ 单元测试 `tests/test_analytics_*.py` 覆盖字段映射 / subprocess 契约 / sqlite upsert / CLI 分发
+- ⏳ 飞书多维表格上报 (待用户配置 `LARK_APP_ID` / `LARK_APP_SECRET` / `LARK_BASE_APP_TOKEN` / `LARK_BASE_TABLE_ID`，stub 在 `lark_uploader.py`)
+- ⏳ 抖音 XHR 字段名按观测填，第一轮 e2e 跑下来如果接口改了需要补 mapping
+- 每天定点跑（建议 `0 9 * * *`，T-1 数据已稳定），不回溯历史
 
-### 4. Docker 化
-- Dockerfile (基于 paperagent conda env) + docker-compose.yaml
-- Playwright cookie / storage_state 通过 volume mount 持久化
-- 代理分流：容器内 `host.docker.internal:7890` 走宿主机 clash，DashScope 仍走 NO_PROXY 直连
-- entrypoint 支持子命令：`paper-video`（生成上传）/ `reply-comments` / `fetch-stats`
+#### CLI 使用示例
+
+```bash
+# 抓取 (默认从 cache/published_papers.json 读 bvid / xhs_note_id 列表)
+python -m src.distribution.analytics.cli fetch --max-posts 20
+
+# 汇总 (近 7 天 ASCII 表)
+python -m src.distribution.analytics.cli summary --days 7
+python -m src.distribution.analytics.cli summary --platforms bilibili --days 30
+```
+
+#### cron
+
+```cron
+0 9 * * * cd /home/jdh/Projects/VlogCutter/JushenRenji && \
+    /home/jdh/miniconda3/envs/paperagent/bin/python \
+    -m src.distribution.analytics.cli fetch --max-posts 20 \
+    >> tmp/analytics_fetch.log 2>&1
+```
+
+### 4. Docker 化 ✅ (代码已落地, 见 [docs/DOCKER.md](docs/DOCKER.md))
+- ✅ `Dockerfile` 基于 `mambaorg/micromamba:1.5-jammy` (paperagent env from `environment.yml`)
+- ✅ `docker-compose.yaml` 三个 service (`paper-video` / `reply-comments` / `fetch-stats`)
+  + 两个 profile (`default` bridge+host-gateway, `host-net` 备选)
+- ✅ `docker-entrypoint.sh` 子命令 dispatcher, 自动起 Xvfb :99 (抖音 headed 必须)
+- ✅ Volume mount: `cache/` (cookie+中间产物), `output/`, `data/` (sqlite), `config.yaml`
+- ✅ 代理分流: `HTTPS_PROXY=host.docker.internal:7890`, `NO_PROXY=dashscope.aliyuncs.com,...`
+- ✅ patchright + chromium 装在 `/opt/ms-playwright/`, SAU 独立 venv `/app/third_party/social-auto-upload/.venv`
+- ⏳ 首次抖音 cookie 必须在 macair (有 GUI) 跑 SAU headed 登录, scp 到 `cache/douyin_cookies.json`
+- ⏳ e2e: 待真实 build (镜像 6-8GB) + 在 GSJts 跑一次完整 paper-video 流程验证
+
+详见 [docs/DOCKER.md](docs/DOCKER.md)。
 
 ---
 
