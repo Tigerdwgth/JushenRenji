@@ -477,7 +477,7 @@ def download_if_remote(pdf_file_path):
         return -1
     return pdf_file_path
 
-def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().strftime(r"%Y-%m-%d"), max_papers=20, output_filename="./output/daily_summary.mp4",long_or_short="short",target_duration=300, paper_link=None):
+def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().strftime(r"%Y-%m-%d"), max_papers=20, output_filename="./output/daily_summary.mp4",long_or_short="short",target_duration=300, paper_link=None, skip_main_video=False):
     """
     为每天 arXiv 上的论文生成一个简短的日报性总结视频。
     参数：
@@ -668,7 +668,8 @@ def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().str
         
         # 单篇论文时在循环内生成封面（循环只执行一次）
         # 多篇论文时封面在循环外、合并视频后统一生成，避免每次迭代覆盖同一文件
-        if len(papers) == 1:
+        # skip_main_video 模式 (manim-only): 跳过封面合成节省时间, 上传链路若需要 cover 由 manim 阶段补
+        if len(papers) == 1 and not skip_main_video:
             try:
                 generate_cover('./pic/1.png', cn_title, output_filename.replace(".mp4", ".png"), paper_abstract=paper_abstract)
             except Exception as e:
@@ -677,6 +678,29 @@ def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().str
         if long_or_short == "short":
             images = images[:3]
             
+        if skip_main_video:
+            # manim-only 模式: 跳过 video_creator 视频合成, 仅记录元数据, 主视频由后续 manim 阶段产出
+            # 缓存 paper_text + structured_plan 给 main.py 后续 Manim 段读取, 避免重新调 LLM 生成 (LLM 偶尔返回畸形 JSON)
+            try:
+                os.makedirs("./cache", exist_ok=True)
+                with open("./cache/paper_text.txt", "w", encoding="utf-8") as _f:
+                    _f.write(text)
+                with open("./cache/structured_plan.json", "w", encoding="utf-8") as _f:
+                    json.dump(structured_plan_part, _f, ensure_ascii=False, indent=2)
+                logging.info("[skip_main_video] 已缓存 structured_plan + paper_text")
+            except Exception as _e:
+                logging.warning(f"[skip_main_video] 缓存失败: {_e}")
+            logging.info(f"[skip_main_video] 跳过第 {paper_idx + 1} 篇论文的视频合成")
+            part_save_path = f"./output/part_{paper_idx + 1}.mp4"
+            generated_part_paths.append(part_save_path)
+            processed_papers.append(paper)
+            origin_titles.append(origin_title)
+            cn_titles.append(cn_title)
+            summaries.append(short_summary or "")
+            paper_links.append((paper.link or "").strip())
+            project_links.append("")
+            continue
+
         # 为当前论文创建独立视频
         logging.info(f"创建第 {paper_idx + 1} 篇论文的视频片段")
         # 传入图像解释以便合成时对每张图片进行解读性讲解
@@ -714,17 +738,21 @@ def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().str
         title_for_filename = cn_titles[0] if cn_titles else "daily_summary"
         title_for_filename = re.sub(r'[\\/:*?"<>|]', '', title_for_filename).strip() or "daily_summary"
         new_part_video_path = os.path.abspath(f"./output/{date_str}_{title_for_filename}.mp4")
-        if os.path.abspath(part_video_path) != new_part_video_path:
-            os.replace(part_video_path, new_part_video_path)
-        # 同步重命名封面文件，确保 cover_path = video_path.replace(".mp4", ".png") 能找到
-        old_cover = os.path.abspath(output_filename.replace(".mp4", ".png"))
-        new_cover = new_part_video_path.replace(".mp4", ".png")
-        if os.path.exists(old_cover) and os.path.abspath(old_cover) != os.path.abspath(new_cover):
-            os.replace(old_cover, new_cover)
-            logging.info(f"封面已重命名: {old_cover} -> {new_cover}")
-        if not os.path.exists(new_part_video_path):
-            raise RuntimeError(f"单篇视频输出失败: {new_part_video_path}")
-        logging.info(f"单篇视频已成功生成，路径为: {new_part_video_path}")
+        if skip_main_video:
+            # manim-only 模式: part_video_path 是预定路径不存在, 跳过物理重命名, 仅返回字符串
+            logging.info(f"[skip_main_video] 跳过物理重命名, 主视频路径 (待 manim 写入): {new_part_video_path}")
+        else:
+            if os.path.abspath(part_video_path) != new_part_video_path:
+                os.replace(part_video_path, new_part_video_path)
+            # 同步重命名封面文件，确保 cover_path = video_path.replace(".mp4", ".png") 能找到
+            old_cover = os.path.abspath(output_filename.replace(".mp4", ".png"))
+            new_cover = new_part_video_path.replace(".mp4", ".png")
+            if os.path.exists(old_cover) and os.path.abspath(old_cover) != os.path.abspath(new_cover):
+                os.replace(old_cover, new_cover)
+                logging.info(f"封面已重命名: {old_cover} -> {new_cover}")
+            if not os.path.exists(new_part_video_path):
+                raise RuntimeError(f"单篇视频输出失败: {new_part_video_path}")
+            logging.info(f"单篇视频已成功生成，路径为: {new_part_video_path}")
         # 单篇成功 → 记录到 published_papers.json (供 --discover 去重)
         try:
             _aid = locals().get('arxiv_id') or None

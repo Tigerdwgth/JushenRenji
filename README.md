@@ -68,6 +68,15 @@
     - Kill switch：设 `JSR_DISABLE_LATEX_SOURCE=1` 即回退到 SAM3+VL 路径
     - 依赖：`pylatexenc`（>=2.10）、`pymupdf`、系统 `pdflatex`（可选，仅路径 C 需要）
     - 透传入口：`ManimEngine(paper_text, structured_plan, arxiv_id=...)` 或在 `main.py --paper-link` 分支自动透传
+14. **三平台关键词动态生成**：每篇论文 LLM 一次产出 B站 / 小红书 / 抖音三平台关键词 dict（不再写死），三层兜底：prompt 约束 + 字符过滤 + 数量上限。
+15. **抖音上传集成**：基于 [`dreammis/social-auto-upload`](https://github.com/dreammis/social-auto-upload) Playwright 路线，子进程跨 venv 调用，含首次扫码登录的容器内二维码暴露流程 + 短信验证码弹窗自动 fill 入口。
+16. **三平台评论自动回复**：B站走 `bilibili-api-python` 官方 API、小红书走 `xhs` 库（SAU venv 子进程）、抖音读路径走 [`Johnserf-Seed/f2`](https://github.com/Johnserf-Seed/f2) mobile API（cookie 月级稳定，跟 PC 创作者中心风控通道隔离）+ 写路径走 chromium daemon CDP。LLM 活泼互动人设统一回复，sqlite 去重 + 日上限节流（B站 50/小红书 15/抖音 20）。
+17. **创作者中心数据聚合**：B站直接 API；小红书/抖音 mobile API（f2）；sqlite 存储 + ASCII summary 表 + CLI 子命令 (`fetch` / `summary`)；可选飞书多维表格上报（stub，需配置 lark 凭证）。
+18. **Manim-only 模式**：`--manim` 时跳过 main video 渲染（节省 60-95 分钟），仅生成 manim 视频作为最终输出。`paperagent_workflow.generate_daily_arxiv_summary(skip_main_video=True)` 控制；`structured_plan` + `paper_text` 同步缓存到 `cache/` 供后续 manim 阶段读取。
+19. **Manim 累加显示**：单屏 5 个元素以内禁止中途 FadeOut，元素累加 FadeIn 直至本场景结束统一一次 FadeOut；`_ensure_page_fadeouts` 已禁用避免 post-process 强插中间 FadeOut。
+20. **opencode 全文上下文**：取消论文文本截取（之前 `[:2000]` / `[:1500]`），DeepSeek-V4-Pro 长上下文窗口直接吃论文全文，提升 manim 代码与方法图分析质量。
+21. **Chromium daemon + CDP attach**（Docker 容器自包含写路径方案）：长跑 chromium 进程（Xvfb headed）+ aiohttp 健康检查 endpoint，所有抖音写操作（上传/评论回复）通过 `connect_over_cdp` 复用同一 page，避免反复装载 cookie 触发风控吊销。
+22. **Docker 化容器自包含部署**：`docker compose up -d` 一键起 paperagent + xhs-mcp + chromium-daemon 三个 service，cookie / config / cache 走 volume mount。详见 `docs/DOCKER.md`。
 
 ## 使用说明
 
@@ -537,88 +546,62 @@ python -m pytest tests/ -v
 
 ---
 
-## 待实现功能 (Roadmap)
+## 部署前置条件
 
-> 已规划 / 进行中的功能，详见 issue 与 task 列表。
+> 整套代码已经落地, 但首次部署需要用户准备以下凭证 / 一次性人工动作。
 
-### 1. 抖音分发模块（首次登录需人工扫码 + 待 e2e 验证）
-- ✅ 已接入 [`dreammis/social-auto-upload`](https://github.com/dreammis/social-auto-upload) (Playwright 路线)
-- ✅ `distribution/douyin.py` 实现 subprocess 调用 SAU venv 上传
-- ✅ `orchestrator.py` 加 `douyin` 到 `VALID_PLATFORMS` + tags_per_platform 路由
-- ✅ 关键词 fallback: B站逗号串取前 5 个 / 标题硬裁剪到 30 字
-- ⏳ 首次扫码登录: 需在 macair 跑 SAU headed 流程, cookie 落 `cache/douyin_cookies.json`
-- ⏳ e2e 待用真实视频跑一次实测 (orchestrator routing + helper 通讯已 unit 验证)
+### 1. 抖音 cookie (首次扫码登录, 一次性)
 
-### 2. 三平台评论自动回复 (代码已落地, 等 e2e 验证)
-- ✅ `src/distribution/comments/{bilibili,xhs,douyin}_comments.py` adapter
-  - B站走 `bilibili-api-python` 的 `comment.send_comment / get_comments_lazy`
-  - 小红书走 `xhs` 库 (SAU venv subprocess) 的 `get_note_all_comments / comment_user`
-  - 抖音走 Playwright headed (Xvfb :99) + SAU storage_state, keyword-based locator
-- ✅ `reply_engine.py` 统一 LLM 回复生成 (活泼互动人设, 三层兜底)
-- ✅ `replied_db.py` sqlite 去重 + 节流计数 (B站 50 / 小红书 15 / 抖音 20 日上限)
-- ✅ `cli.py` 入口 + `tmp/run_reply_comments.sh` cron @hourly 触发脚本
-- ⏳ 首跑前需在 `cache/post_ids.json` 写入 video → BV/note_id/aweme_url 映射
-- ⏳ e2e 待真实评论场景跑一次 (单测全部 mock)
-
-**使用方式**:
-```bash
-# (1) 写好 cache/post_ids.json 映射 (key 用 arxiv_id 或 video_path)
-# (2) dry-run 检查
-python -m src.distribution.comments.cli \
-    --platforms bilibili,xiaohongshu,douyin \
-    --max-posts 10 --since-hours 72 --dry-run
-# (3) 真实发布
-python -m src.distribution.comments.cli --no-dry-run --platforms bilibili
-# (4) cron @hourly 自动跑 (默认 dry-run, 改 sh 里的 --no-dry-run)
-0 * * * * /home/jdh/Projects/VlogCutter/JushenRenji/tmp/run_reply_comments.sh
-```
-
-### 3. 创作者中心数据聚合
-- ✅ 模块 `src/distribution/analytics/` 已落地
-  - `bilibili_stats.py` — 走 `bilibili_api.video.Video.get_info().stat`，无需 Playwright
-  - `xhs_stats.py` — subprocess 调 SAU venv 里的 `xhs.XhsClient.get_note_by_id`
-  - `douyin_stats.py` — Playwright Xvfb headed 抓 `creator.douyin.com/creator-micro/data` 的 XHR JSON，DOM 兜底解析作品管理页
-  - `stats_store.py` — sqlite (`data/creator_stats.db`) + ASCII summary 表
-  - `cli.py` — `python -m src.distribution.analytics.cli {fetch,summary}`，cron 友好
-- ✅ schema: `(platform, post_id, fetch_date)` 复合主键 / views / likes / comments / shares / favorites / title / raw_json
-- ✅ 单元测试 `tests/test_analytics_*.py` 覆盖字段映射 / subprocess 契约 / sqlite upsert / CLI 分发
-- ⏳ 飞书多维表格上报 (待用户配置 `LARK_APP_ID` / `LARK_APP_SECRET` / `LARK_BASE_APP_TOKEN` / `LARK_BASE_TABLE_ID`，stub 在 `lark_uploader.py`)
-- ⏳ 抖音 XHR 字段名按观测填，第一轮 e2e 跑下来如果接口改了需要补 mapping
-- 每天定点跑（建议 `0 9 * * *`，T-1 数据已稳定），不回溯历史
-
-#### CLI 使用示例
+容器自包含方案: chromium daemon (Xvfb headed) 在容器里跑, 二维码 PNG 暴露到主机 volume:
 
 ```bash
-# 抓取 (默认从 cache/published_papers.json 读 bvid / xhs_note_id 列表)
-python -m src.distribution.analytics.cli fetch --max-posts 20
-
-# 汇总 (近 7 天 ASCII 表)
-python -m src.distribution.analytics.cli summary --days 7
-python -m src.distribution.analytics.cli summary --platforms bilibili --days 30
+docker compose up -d   # 启动 chromium-daemon + xhs-mcp + paperagent
+docker compose run --rm paper-video --first-time-douyin-login
+# -> ./cache/douyin_qr.png 出现, 主机用 Preview/任意看图工具打开扫一次
+# -> daemon 检测到登录态, 自动写 ./cache/douyin_cookies.json
 ```
 
-#### cron
+cookie 长期保存在 `cache/`, 之后所有抖音写操作 (上传 / 评论回复) 通过 CDP attach 复用 daemon 的同一 page, 不再触发风控反复吊销。
 
-```cron
-0 9 * * * cd /home/jdh/Projects/VlogCutter/JushenRenji && \
-    /home/jdh/miniconda3/envs/paperagent/bin/python \
-    -m src.distribution.analytics.cli fetch --max-posts 20 \
-    >> tmp/analytics_fetch.log 2>&1
+### 2. `cache/post_ids.json` 视频映射 (评论 / 数据模块需要)
+
+文件格式 (key 用 arxiv_id 或视频 mp4 路径):
+
+```json
+{
+  "1706.03762": {
+    "bilibili": "BV1xxxxxxxxx",
+    "xiaohongshu": {"note_id": "...", "xsec_token": "..."},
+    "douyin": "https://www.douyin.com/video/<aweme_id>"
+  }
+}
 ```
 
-### 4. Docker 化 ✅ (代码已落地, 见 [docs/DOCKER.md](docs/DOCKER.md))
-- ✅ `Dockerfile` 基于 `mambaorg/micromamba:1.5-jammy` (paperagent env from `environment.yml`)
-- ✅ `docker-compose.yaml` 三个 service (`paper-video` / `reply-comments` / `fetch-stats`)
-  + 两个 profile (`default` bridge+host-gateway, `host-net` 备选)
-- ✅ `docker-entrypoint.sh` 子命令 dispatcher, 自动起 Xvfb :99 (抖音 headed 必须)
-- ✅ Volume mount: `cache/` (cookie+中间产物), `output/`, `data/` (sqlite), `config.yaml`
-- ✅ 代理分流: `HTTPS_PROXY=host.docker.internal:7890`, `NO_PROXY=dashscope.aliyuncs.com,...`
-- ✅ patchright + chromium 装在 `/opt/ms-playwright/`, SAU 独立 venv `/app/third_party/social-auto-upload/.venv`
-- ⏳ 首次抖音 cookie 必须在 macair (有 GUI) 跑 SAU headed 登录, scp 到 `cache/douyin_cookies.json`
-- ⏳ e2e: 待真实 build (镜像 6-8GB) + 在 GSJts 跑一次完整 paper-video 流程验证
+无映射的视频会被自动跳过, 不影响其他平台。
 
-详见 [docs/DOCKER.md](docs/DOCKER.md)。
+### 3. config.yaml (LLM / TTS / 平台凭证)
 
+```bash
+cp config.example.yaml config.yaml
+# 填: llm_api_key (DeepSeek), dashscope_api_key (TTS),
+#     bilibili_cookies (SESSDATA + bili_jct + buvid3), gemini_api_key (封面)
+```
+
+### 4. 飞书多维表格上报 (可选)
+
+需要配置 4 个 env: `LARK_APP_ID` / `LARK_APP_SECRET` / `LARK_BASE_APP_TOKEN` / `LARK_BASE_TABLE_ID`, 然后填充 `src/distribution/analytics/lark_uploader.py:push_to_lark`。不配的话, sqlite + CLI summary 已足够本地查看数据。
+
+### 5. Docker 镜像首次 build
+
+```bash
+docker compose --profile default build   # 15-30 分钟, 镜像 6-8 GB (含 cuda runtime + chromium)
+```
+
+之后 `docker compose run --rm paper-video --paper-link <arxiv-url> --manim --manim-tts` 一键全自动跑通论文 → 视频 → 三平台分发。
+
+### 抖音开放平台 OpenAPI (长期方案)
+
+cookie 路线即使有 chromium daemon, 抖音风控仍可能吊销。一劳永逸的方案是申请抖音开放平台企业开发者资质 (个体户营业执照即可, 1-3 工作日)，拿到 `item.comment` / `video.create` scope 后改走 OAuth refresh token, 永不过期。
 ---
 
 ## 贡献

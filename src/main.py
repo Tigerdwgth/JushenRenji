@@ -169,10 +169,15 @@ if __name__ == "__main__":
             long_or_short=video_length,
             target_duration=target_duration,
             paper_link=paper_link,
+            skip_main_video=manim_mode,
         )
-        if not path or not os.path.exists(path):
-            raise RuntimeError(f"视频生成失败，输出文件不存在: {path}")
-        logging.info("本地视频生成完成: %s", path)
+        if manim_mode:
+            # manim-only 模式: path 此时是预定路径还不存在, 由后续 ManimEngine 写入
+            logging.info("已跳过主视频合成 (manim-only 模式), 预定路径: %s", path)
+        else:
+            if not path or not os.path.exists(path):
+                raise RuntimeError(f"视频生成失败，输出文件不存在: {path}")
+            logging.info("本地视频生成完成: %s", path)
 
         # ---- Manim 演示模式 ----
         if manim_mode:

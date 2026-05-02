@@ -30,8 +30,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         fonts-noto-cjk fonts-liberation \
         git curl ca-certificates \
         build-essential pkg-config \
+        libpango1.0-dev libcairo2-dev python3-dev \
         sqlite3 \
     && rm -rf /var/lib/apt/lists/*
+
+# ---- pip 国内镜像 (容器内无法走 host clash 代理) ----
+RUN mkdir -p /etc && \
+    echo "[global]" > /etc/pip.conf && \
+    echo "index-url = https://pypi.tuna.tsinghua.edu.cn/simple" >> /etc/pip.conf && \
+    echo "extra-index-url = https://download.pytorch.org/whl/cu126" >> /etc/pip.conf && \
+    echo "trusted-host = pypi.tuna.tsinghua.edu.cn pypi.org download.pytorch.org" >> /etc/pip.conf
 
 # ---- micromamba env: paperagent ----
 ENV MAMBA_ROOT_PREFIX=/opt/conda \

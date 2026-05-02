@@ -222,9 +222,13 @@ class ManimEngine:
         return "\n".join(out)
 
     def inject_bounds_check(self, code):
-        """注入自动缩放安全网、移除末尾 FadeOut、自动给长文本换行、确保分页 FadeOut、抬升 wait 时长。"""
+        """注入自动缩放安全网、移除末尾 FadeOut、自动给长文本换行、抬升 wait 时长。
+
+        累加显示原则: 不在中间强插 FadeOut (用户偏好元素 FadeIn 后保留, 末尾统一 FadeOut)。
+        _ensure_page_fadeouts 会在两个 FadeIn 之间自动插 FadeOut, 跟累加显示矛盾, 已禁用。
+        """
         code = self._wrap_long_texts(code)
-        code = self._ensure_page_fadeouts(code)
+        # _ensure_page_fadeouts 已禁用: 它会强插中间 FadeOut, 破坏累加显示
         code = self._remove_trailing_fadeout(code)
         code = self._inject_scale_safety(code)
         code = self._enforce_reading_time(code)
@@ -379,7 +383,7 @@ class ManimEngine:
         if not figure_analysis:
             # abstract+intro 的前 2000 字对 architecture scene 是噪声,
             # 有 figure_analysis 时依赖它与 eb_manim_elements 即可
-            user_content += f"\n论文原文参考（前2000字）:\n{self.paper_text[:2000]}\n"
+            user_content += f"\n论文原文参考（全文）:\n{self.paper_text}\n"
         user_content += "\n重要：生成的动画内容必须忠实于这篇论文的具体方法，不要用通用的示例。\n"
 
         full_prompt = prompt + "\n\n" + user_content
@@ -869,7 +873,7 @@ class ManimEngine:
             main_figure = method_images[0]
             logger.info("分析方法主图: %s", main_figure)
             try:
-                paper_ctx = self.paper_text[:1500] if self.paper_text else ""
+                paper_ctx = self.paper_text if self.paper_text else ""
                 figure_analysis_result = analyze_and_prepare(main_figure, paper_ctx, arxiv_id=self.arxiv_id)
                 if figure_analysis_result and figure_analysis_result.get("analysis"):
                     logger.info("方法图分析成功: 类型=%s, %d 组件, %d 连接",
@@ -881,10 +885,21 @@ class ManimEngine:
             except Exception as e:
                 logger.warning("方法图分析失败，将使用默认生成: %s", e)
 
+        # [ablation] PAPERIFY_DISABLE_FIGURE_GROUNDED switch: when set, drop the
+        # eb_manim_elements coordinate spec from the prompt to simulate the
+        # caption-only baseline that prior LLM-to-Manim work uses.
+        if figure_analysis_result and os.getenv("PAPERIFY_DISABLE_FIGURE_GROUNDED"):
+            figure_analysis_result["eb_manim_elements"] = ""
+            logger.info("[ablation] PAPERIFY_DISABLE_FIGURE_GROUNDED=1 -> cleared eb_manim_elements (caption-only baseline)")
+
         # 4. Generate + render each scene
         scene_videos = []
         rendered_indices = []
         for i, sdef in enumerate(scene_defs):
+            # [ablation] PAPERIFY_METHOD_ONLY: skip non-method scenes for case-study runs
+            if os.getenv("PAPERIFY_METHOD_ONLY") and sdef["type"] != "architecture":
+                logger.info("[ablation] skipping %s (PAPERIFY_METHOD_ONLY=1)", sdef["scene_name"])
+                continue
             logger.info("生成场景 %d/4: %s (%s)", i + 1, sdef["scene_name"], sdef["type"])
 
             # MethodScene 注入图像分析结果
