@@ -262,10 +262,8 @@ class ManimEngine:
             wf.write("export PATH=/usr/local/bin:$PATH\n")
             # CWD_ISOLATION_PATCH: cd 到 temp_dir，让 opencode 看不到项目根的历史 .py 产物
             wf.write(f'cd "{os.path.abspath(self.temp_dir)}"\n')
-            # 用变量读取 prompt，避免 $(cat) 在命令行展开时卡死
-            wf.write(f'PROMPT_FILE="{prompt_file}"\n')
-            wf.write('PROMPT=$(cat "$PROMPT_FILE")\n')
-            wf.write('opencode run "$PROMPT"\n')
+            # 通过 stdin 注入 prompt, 避免 paper_text 全文使命令行参数超 ARG_MAX (Linux 128KB)
+            wf.write(f'opencode run < "{prompt_file}"\n')
         os.chmod(wrapper_script, 0o755)
         cmd = f'bash {wrapper_script}' 
         try:
@@ -381,9 +379,13 @@ class ManimEngine:
                        len(figure_analysis.get("analysis", {}).get("components", [])))
 
         if not figure_analysis:
-            # abstract+intro 的前 2000 字对 architecture scene 是噪声,
-            # 有 figure_analysis 时依赖它与 eb_manim_elements 即可
-            user_content += f"\n论文原文参考（全文）:\n{self.paper_text}\n"
+            # 论文全文不再嵌入 prompt（避免 ARG_MAX 超限 + 节省上下文 token）
+            # 写到固定路径让 opencode 自行 Read
+            paper_path = os.path.abspath(os.path.join(self.temp_dir, "_paper_text.txt"))
+            os.makedirs(os.path.dirname(paper_path), exist_ok=True)
+            with open(paper_path, "w", encoding="utf-8") as _pf:
+                _pf.write(self.paper_text or "")
+            user_content += f"\n论文原文路径（请用 Read 工具读取后再生成代码）: {paper_path}\n"
         user_content += "\n重要：生成的动画内容必须忠实于这篇论文的具体方法，不要用通用的示例。\n"
 
         full_prompt = prompt + "\n\n" + user_content
