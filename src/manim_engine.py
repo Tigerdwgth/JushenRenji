@@ -245,6 +245,16 @@ class ManimEngine:
         with open(prompt_file, "w", encoding="utf-8") as f:
             f.write(prompt_text)
 
+        # 调用前清理上次的 <scene_name>.py, 这样调用结束后若文件存在,
+        # 就一定是 opencode 本次用 Write 工具新写的, 直接读它即可 (主路径).
+        if scene_name:
+            scene_py_path = os.path.join(os.path.abspath(self.temp_dir), f"{scene_name}.py")
+            try:
+                if os.path.exists(scene_py_path):
+                    os.remove(scene_py_path)
+            except Exception as _e:
+                logger.warning("清理旧 %s 失败: %s", scene_py_path, _e)
+
         env = os.environ.copy()
         env["DEEPSEEK_API_KEY"] = self._get_deepseek_key()
         env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
@@ -276,41 +286,42 @@ class ManimEngine:
             if not output:
                 output = result.stderr or ""
 
+            # 0. 优先路径: opencode 用 Write 工具把代码写到 cwd/<scene_name>.py
+            #    (调用前已清理旧文件, 此处文件存在 = 本次新写)
+            if scene_name:
+                scene_py_path = os.path.join(os.path.abspath(self.temp_dir), f"{scene_name}.py")
+                if os.path.exists(scene_py_path):
+                    try:
+                        code_from_file = open(scene_py_path, "r", encoding="utf-8").read()
+                        if "from manim import" in code_from_file and "class " in code_from_file:
+                            logger.info("opencode 通过 Write 写入 %s (%d 行)",
+                                        scene_py_path, code_from_file.count("\n") + 1)
+                            return code_from_file.strip()
+                        else:
+                            logger.warning("%s 已存在但内容无效 (缺 from manim import 或 class)", scene_py_path)
+                    except Exception as _e:
+                        logger.warning("读取 %s 失败: %s", scene_py_path, _e)
+
             # 1. 去掉 ANSI 转义码
             output = re.sub(r'\x1b\[[0-9;]*m', '', output)
             output = re.sub(r'\033\[[0-9;]*m', '', output)
-            # 真正的 ANSI 字节
             output = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', output)
 
-            # 2. 提取 ```python ... ``` 代码块
+            # 2. fallback: 提取 stdout 的 ```python ... ``` 代码块
             code_match = re.search(r'```python\s*\n(.*?)\n```', output, re.DOTALL)
             if code_match:
                 code = code_match.group(1).strip()
-                logger.info("opencode 返回代码 (%d 行)", code.count("\n") + 1)
+                logger.info("opencode 返回代码 (stdout, %d 行)", code.count("\n") + 1)
                 return code
 
-            # 3. fallback: 提取 from manim import * 开始的内容
+            # 3. fallback: 提取 from manim import * 开始的文本
             manim_match = re.search(r'(from manim import \*.*)', output, re.DOTALL)
             if manim_match:
                 code = manim_match.group(1).strip()
-                # 去掉尾部的 ``` 标记
                 code = re.sub(r'\n```\s*$', '', code)
-                logger.info("opencode fallback 提取代码 (%d 行)", code.count("\n") + 1)
+                logger.info("opencode fallback 提取代码 (stdout text, %d 行)", code.count("\n") + 1)
                 return code
 
-            # 4. 终极兜底: 若 opencode 用 Write 工具自己把代码写到 ./<scene_name>.py
-            # (违反铁律但模型有时会这么做), 直接读文件
-            if scene_name:
-                fb_path = os.path.join(os.path.abspath(self.temp_dir), f"{scene_name}.py")
-                if os.path.exists(fb_path):
-                    try:
-                        fb = open(fb_path, "r", encoding="utf-8").read()
-                        if "from manim import" in fb and "class " in fb:
-                            logger.info("opencode 通过 Write 写入了 %s, 直接读取兜底 (%d 行)",
-                                        fb_path, fb.count("\n") + 1)
-                            return fb.strip()
-                    except Exception as _e:
-                        logger.warning("读取 %s 兜底失败: %s", fb_path, _e)
             logger.warning("opencode 未返回有效代码，输出前 500 字: %s", output[:500])
             return ""
         except subprocess.TimeoutExpired:
