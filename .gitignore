@@ -60,3 +60,4 @@ data/creator_stats.db
 data/creator_stats.db-journal
 data/creator_stats.db-shm
 data/creator_stats.db-wal
+docker/opencode/

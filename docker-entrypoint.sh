@@ -108,8 +108,13 @@ main() {
         paper-video)
             check_mounts
             start_xvfb
-            log "exec: python src/main.py $*"
-            exec python /app/src/main.py "$@"
+            # main.py 混用 "from env_setup" (顶层) 与 "from src.distribution" (绝对)
+            # cwd=/app 让 ./output ./cache ./pic 对齐 docker-compose mount
+            # PYTHONPATH=/app:/app/src 同时支持两种 import 写法
+            export PYTHONPATH="/app:/app/src:${PYTHONPATH:-}"
+            cd /app
+            log "exec: python src/main.py $* (cwd=/app, PYTHONPATH=/app:/app/src)"
+            exec python src/main.py "$@"
             ;;
         reply-comments)
             check_mounts

@@ -25,7 +25,7 @@ x-common-build: &common-build
   context: .
   dockerfile: Dockerfile
   args:
-    SAU_REPO: ${SAU_REPO:-https://github.com/dreammis/social-auto-upload.git}
+    SAU_REPO: ${SAU_REPO:-https://gh-proxy.com/https://github.com/dreammis/social-auto-upload.git}
     SAU_REF: ${SAU_REF:-main}
 
 x-common-volumes: &common-volumes

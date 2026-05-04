@@ -15,7 +15,7 @@ worktrees/
 .git/
 .github/
 .claude/
-.agents/
+# .agents/  # NEED for opencode manim skills - kept in image
 .pytest_cache/
 __pycache__/
 **/__pycache__/
@@ -62,3 +62,14 @@ docs/plans/
 package-lock.json
 thirdparty/edit-banana/models/
 thirdparty/edit-banana/sam3_src/
+
+# === build context 瘦身 (2026-05-04) ===
+thirdparty/
+src/output/
+src/cache_resnet/
+src/pic_resnet/
+src/2026-*.mp4
+src/2026-*.mp3
+*.bak.*
+app.log
+part_*TEMP_MPY_wvf_snd.*

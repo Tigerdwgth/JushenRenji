@@ -1,7 +1,19 @@
-import deepdoctection as dd
-from deepdoctection.utils.settings import LayoutType, Relationships
-from deepdoctection.datapoint.view import Page
-from IPython.core.display import HTML
+# deepdoctection 在 docker 构建因 numpy<2 冲突已禁用; 失败时函数体 try/except 兜底
+try:
+    import deepdoctection as dd
+    from deepdoctection.utils.settings import LayoutType, Relationships
+    from deepdoctection.datapoint.view import Page
+    _DD_AVAILABLE = True
+except ImportError as _e:
+    dd = None  # type: ignore
+    LayoutType = Relationships = Page = None  # type: ignore
+    _DD_AVAILABLE = False
+    import logging as _logging
+    _logging.warning("deepdoctection 不可用, extract_images_from_pdf 将跳过: %s", _e)
+try:
+    from IPython.core.display import HTML  # type: ignore
+except ImportError:
+    HTML = None  # type: ignore
 from matplotlib import pyplot as plt
 import os  # 添加导入 os 模块
 import tempfile  # 添加导入 tempfile 模块
@@ -33,6 +45,41 @@ logging.basicConfig(
 # PDF_PATH = r".\mambaout.pdf"   
 # extract_images_from_pdf(PDF_PATH) 
 def extract_images_from_pdf(pdf_path, cnt=None, store_path='./pic/'):
+    if not _DD_AVAILABLE:
+        logging.warning('deepdoctection 不可用, 走 PyMuPDF 兜底提取 (能拿到 raw images, 没有 figure 版面框)')
+        try:
+            import fitz  # PyMuPDF
+        except ImportError as e:
+            logging.error('PyMuPDF 也不可用, 无法提取图片: %s', e)
+            return
+        os.makedirs(store_path, exist_ok=True)
+        doc = fitz.open(pdf_path)
+        figure_table_counter = 0
+        for page_idx, page in enumerate(doc):
+            for img_info in page.get_images(full=True):
+                try:
+                    figure_table_counter += 1
+                    xref = img_info[0]
+                    base = doc.extract_image(xref)
+                    img_bytes = base['image']
+                    ext = base.get('ext', 'png')
+                    out_path = os.path.join(store_path, f'{figure_table_counter}.png')
+                    if ext.lower() == 'png':
+                        with open(out_path, 'wb') as fh:
+                            fh.write(img_bytes)
+                    else:
+                        # convert to png via PIL
+                        import io as _io
+                        Image.open(_io.BytesIO(img_bytes)).convert('RGB').save(out_path, 'PNG')
+                    logging.info('PyMuPDF: 第 %d 页第 %d 个图片 -> %s', page_idx + 1, figure_table_counter, out_path)
+                    if cnt and figure_table_counter >= cnt:
+                        doc.close()
+                        return
+                except Exception as e:
+                    logging.warning('PyMuPDF: 处理 xref=%s 失败: %s', img_info[0] if img_info else '?', e)
+        doc.close()
+        logging.info('PyMuPDF: 共提取 %d 张图片到 %s', figure_table_counter, store_path)
+        return
     try:
         analyzer = dd.get_dd_analyzer(config_overwrite=["USE_OCR=False"])  # 禁用OCR避免tesseract错误中断图片提取
         df = analyzer.analyze(path=pdf_path)  # setting up pipeline
