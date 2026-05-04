@@ -235,7 +235,7 @@ class ManimEngine:
         return code
 
 
-    def _opencode_generate(self, prompt_text):
+    def _opencode_generate(self, prompt_text, scene_name=None):
         """通过 opencode headless 模式调用 DeepSeek-R1 生成代码。
         opencode 会自动加载 manim_skill 最佳实践。"""
 
@@ -298,6 +298,19 @@ class ManimEngine:
                 logger.info("opencode fallback 提取代码 (%d 行)", code.count("\n") + 1)
                 return code
 
+            # 4. 终极兜底: 若 opencode 用 Write 工具自己把代码写到 ./<scene_name>.py
+            # (违反铁律但模型有时会这么做), 直接读文件
+            if scene_name:
+                fb_path = os.path.join(os.path.abspath(self.temp_dir), f"{scene_name}.py")
+                if os.path.exists(fb_path):
+                    try:
+                        fb = open(fb_path, "r", encoding="utf-8").read()
+                        if "from manim import" in fb and "class " in fb:
+                            logger.info("opencode 通过 Write 写入了 %s, 直接读取兜底 (%d 行)",
+                                        fb_path, fb.count("\n") + 1)
+                            return fb.strip()
+                    except Exception as _e:
+                        logger.warning("读取 %s 兜底失败: %s", fb_path, _e)
             logger.warning("opencode 未返回有效代码，输出前 500 字: %s", output[:500])
             return ""
         except subprocess.TimeoutExpired:
@@ -307,10 +320,10 @@ class ManimEngine:
             logger.error("opencode 调用失败: %s", e)
             return ""
 
-    def _opencode_generate_with_retry(self, prompt_text, attempts=3):
+    def _opencode_generate_with_retry(self, prompt_text, attempts=3, scene_name=None):
         """连续调用 opencode，直到拿到非空代码或次数用尽。"""
         for i in range(attempts):
-            raw = self._opencode_generate(prompt_text)
+            raw = self._opencode_generate(prompt_text, scene_name=scene_name)
             if raw:
                 return raw
             logger.warning("opencode 返回空 (第 %d/%d 次)", i + 1, attempts)
@@ -392,7 +405,7 @@ class ManimEngine:
 
         # 所有场景统一走 opencode（禁止直连 API 生成 manim 代码）
         logger.info("使用 opencode 生成代码 (prompt_key=%s)...", prompt_key)
-        raw = self._opencode_generate_with_retry(full_prompt, attempts=3)
+        raw = self._opencode_generate_with_retry(full_prompt, attempts=3, scene_name=scene_info.get("scene_name"))
 
         # 清理 markdown 代码块标记
         code = (raw or "").strip()
@@ -445,7 +458,7 @@ class ManimEngine:
                 if attempt < max_retries - 1:
                     fix_prompt = prompts_dict.get("manim_fix_code", "")
                     fix_content = f"原始代码:\n```python\n{code}\n```\n\n错误信息:\n```\n{error_msg[:3000]}\n```"
-                    code = self._opencode_generate_with_retry(fix_prompt + "\n\n" + fix_content, attempts=2)
+                    code = self._opencode_generate_with_retry(fix_prompt + "\n\n" + fix_content, attempts=2, scene_name=scene_name)
                     code = (code or "").strip()
                     if code.startswith("```"):
                         code = re.sub(r"^```\w*\n?", "", code)
@@ -799,7 +812,7 @@ class ManimEngine:
                 if eb_elements:
                     fix_prompt += "\n\n【图表精确规格（请参照）】:\n" + eb_elements
 
-            raw = self._opencode_generate_with_retry(fix_prompt, attempts=2)
+            raw = self._opencode_generate_with_retry(fix_prompt, attempts=2, scene_name=sdef["scene_name"])
 
             fixed_code = (raw or "").strip()
             if fixed_code.startswith("```"):

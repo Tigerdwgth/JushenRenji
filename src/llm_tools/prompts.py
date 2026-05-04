@@ -272,7 +272,7 @@ prompts_dict["manim_analyze_script"] = (
 )
 
 prompts_dict["manim_generate_formula"] = (
-    "【代码生成铁律 — 必须严格遵守】:\n- 这是一个独立的代码生成任务。不要 read / cat / inspect 工作目录中任何已存在的 .py 文件（它们是历史产物）。当 prompt 提供 \"论文原文路径\" 或 \"图像分析路径\" 时, 请使用 Read 工具读取该 .txt / .json 文件作为参考依据, 但禁止读取任何 .py 历史产物。\n- 直接基于下面给定的论文内容与分析数据，从零开始写完整可运行的 Manim 代码。\n- 输出必须是唯一一个 ```python ... ``` markdown 代码块，包含完整可运行的 Manim Scene。\n- 若工作目录中已有同名场景文件（TitleScene.py / MethodScene.py / IntroScene.py / ResultsScene.py 等），请全部忽略，它们是无关历史产物。\n- 严禁输出 “已有/查看/已经满足需求/不需要修改” 这类描述语。\n\n"
+    "【代码生成铁律 — 必须严格遵守】:\n- 这是一个独立的代码生成任务。不要 read / cat / inspect 工作目录中任何已存在的 .py 文件（它们是历史产物）。当 prompt 提供 \"论文原文路径\" 或 \"图像分析路径\" 时, 请使用 Read 工具读取该 .txt / .json 文件作为参考依据, 但禁止读取任何 .py 历史产物。\n- 严禁使用 Write / Edit / Bash 任何工具：禁止把代码写入 .py 文件、禁止运行 manim 自测渲染、禁止运行任何 shell 命令。唯一允许的产物是 stdout 输出的单个 ```python ... ``` markdown 代码块。\n- 直接基于下面给定的论文内容与分析数据，从零开始写完整可运行的 Manim 代码。\n- 输出必须是唯一一个 ```python ... ``` markdown 代码块，包含完整可运行的 Manim Scene。\n- 若工作目录中已有同名场景文件（TitleScene.py / MethodScene.py / IntroScene.py / ResultsScene.py 等），请全部忽略，它们是无关历史产物。\n- 严禁输出 “已有/查看/已经满足需求/不需要修改” 这类描述语。\n\n"
     "你是 ManimCE (Manim Community Edition) 专家。请生成一个展示数学公式推导的 Manim Scene。\n\n"
     "代码要求：\n"
     "1. 使用 `from manim import *`\n"
@@ -290,7 +290,7 @@ prompts_dict["manim_generate_formula"] = (
 )
 
 prompts_dict["manim_generate_architecture"] = (
-    "【代码生成铁律 — 必须严格遵守】:\n- 这是一个独立的代码生成任务。不要 read / cat / inspect 工作目录中任何已存在的 .py 文件（它们是历史产物）。当 prompt 提供 \"论文原文路径\" 或 \"图像分析路径\" 时, 请使用 Read 工具读取该 .txt / .json 文件作为参考依据, 但禁止读取任何 .py 历史产物。\n- 直接基于下面给定的论文内容与分析数据，从零开始写完整可运行的 Manim 代码。\n- 输出必须是唯一一个 ```python ... ``` markdown 代码块，包含完整可运行的 Manim Scene。\n- 若工作目录中已有同名场景文件（TitleScene.py / MethodScene.py / IntroScene.py / ResultsScene.py 等），请全部忽略，它们是无关历史产物。\n- 严禁输出 “已有/查看/已经满足需求/不需要修改” 这类描述语。\n\n"
+    "【代码生成铁律 — 必须严格遵守】:\n- 这是一个独立的代码生成任务。不要 read / cat / inspect 工作目录中任何已存在的 .py 文件（它们是历史产物）。当 prompt 提供 \"论文原文路径\" 或 \"图像分析路径\" 时, 请使用 Read 工具读取该 .txt / .json 文件作为参考依据, 但禁止读取任何 .py 历史产物。\n- 严禁使用 Write / Edit / Bash 任何工具：禁止把代码写入 .py 文件、禁止运行 manim 自测渲染、禁止运行任何 shell 命令。唯一允许的产物是 stdout 输出的单个 ```python ... ``` markdown 代码块。\n- 直接基于下面给定的论文内容与分析数据，从零开始写完整可运行的 Manim 代码。\n- 输出必须是唯一一个 ```python ... ``` markdown 代码块，包含完整可运行的 Manim Scene。\n- 若工作目录中已有同名场景文件（TitleScene.py / MethodScene.py / IntroScene.py / ResultsScene.py 等），请全部忽略，它们是无关历史产物。\n- 严禁输出 “已有/查看/已经满足需求/不需要修改” 这类描述语。\n\n"
     "你是 ManimCE (Manim Community Edition) 专家。请生成一个展示模型架构的 Manim Scene。\n\n"
     "代码要求：\n"
     "1. 使用 `from manim import *`\n"
@@ -311,7 +311,7 @@ prompts_dict["manim_generate_architecture"] = (
 )
 
 prompts_dict["manim_generate_flow"] = (
-    "【代码生成铁律 — 必须严格遵守】:\n- 这是一个独立的代码生成任务。不要 read / cat / inspect 工作目录中任何已存在的 .py 文件（它们是历史产物）。当 prompt 提供 \"论文原文路径\" 或 \"图像分析路径\" 时, 请使用 Read 工具读取该 .txt / .json 文件作为参考依据, 但禁止读取任何 .py 历史产物。\n- 直接基于下面给定的论文内容与分析数据，从零开始写完整可运行的 Manim 代码。\n- 输出必须是唯一一个 ```python ... ``` markdown 代码块，包含完整可运行的 Manim Scene。\n- 若工作目录中已有同名场景文件（TitleScene.py / MethodScene.py / IntroScene.py / ResultsScene.py 等），请全部忽略，它们是无关历史产物。\n- 严禁输出 “已有/查看/已经满足需求/不需要修改” 这类描述语。\n\n"
+    "【代码生成铁律 — 必须严格遵守】:\n- 这是一个独立的代码生成任务。不要 read / cat / inspect 工作目录中任何已存在的 .py 文件（它们是历史产物）。当 prompt 提供 \"论文原文路径\" 或 \"图像分析路径\" 时, 请使用 Read 工具读取该 .txt / .json 文件作为参考依据, 但禁止读取任何 .py 历史产物。\n- 严禁使用 Write / Edit / Bash 任何工具：禁止把代码写入 .py 文件、禁止运行 manim 自测渲染、禁止运行任何 shell 命令。唯一允许的产物是 stdout 输出的单个 ```python ... ``` markdown 代码块。\n- 直接基于下面给定的论文内容与分析数据，从零开始写完整可运行的 Manim 代码。\n- 输出必须是唯一一个 ```python ... ``` markdown 代码块，包含完整可运行的 Manim Scene。\n- 若工作目录中已有同名场景文件（TitleScene.py / MethodScene.py / IntroScene.py / ResultsScene.py 等），请全部忽略，它们是无关历史产物。\n- 严禁输出 “已有/查看/已经满足需求/不需要修改” 这类描述语。\n\n"
     "你是 ManimCE (Manim Community Edition) 专家。请生成一个展示算法流程的 Manim Scene。\n\n"
     "代码要求：\n"
     "1. 使用 `from manim import *`\n"
@@ -331,7 +331,7 @@ prompts_dict["manim_generate_flow"] = (
 )
 
 prompts_dict["manim_generate_title"] = (
-    "【代码生成铁律 — 必须严格遵守】:\n- 这是一个独立的代码生成任务。不要 read / cat / inspect 工作目录中任何已存在的 .py 文件（它们是历史产物）。当 prompt 提供 \"论文原文路径\" 或 \"图像分析路径\" 时, 请使用 Read 工具读取该 .txt / .json 文件作为参考依据, 但禁止读取任何 .py 历史产物。\n- 直接基于下面给定的论文内容与分析数据，从零开始写完整可运行的 Manim 代码。\n- 输出必须是唯一一个 ```python ... ``` markdown 代码块，包含完整可运行的 Manim Scene。\n- 若工作目录中已有同名场景文件（TitleScene.py / MethodScene.py / IntroScene.py / ResultsScene.py 等），请全部忽略，它们是无关历史产物。\n- 严禁输出 “已有/查看/已经满足需求/不需要修改” 这类描述语。\n\n"
+    "【代码生成铁律 — 必须严格遵守】:\n- 这是一个独立的代码生成任务。不要 read / cat / inspect 工作目录中任何已存在的 .py 文件（它们是历史产物）。当 prompt 提供 \"论文原文路径\" 或 \"图像分析路径\" 时, 请使用 Read 工具读取该 .txt / .json 文件作为参考依据, 但禁止读取任何 .py 历史产物。\n- 严禁使用 Write / Edit / Bash 任何工具：禁止把代码写入 .py 文件、禁止运行 manim 自测渲染、禁止运行任何 shell 命令。唯一允许的产物是 stdout 输出的单个 ```python ... ``` markdown 代码块。\n- 直接基于下面给定的论文内容与分析数据，从零开始写完整可运行的 Manim 代码。\n- 输出必须是唯一一个 ```python ... ``` markdown 代码块，包含完整可运行的 Manim Scene。\n- 若工作目录中已有同名场景文件（TitleScene.py / MethodScene.py / IntroScene.py / ResultsScene.py 等），请全部忽略，它们是无关历史产物。\n- 严禁输出 “已有/查看/已经满足需求/不需要修改” 这类描述语。\n\n"
     "你是 ManimCE (Manim Community Edition) 专家。请生成一个展示论文标题和核心贡献的 Manim Scene。\n\n"
     "代码要求：\n"
     "1. 使用 `from manim import *`\n"
@@ -367,7 +367,7 @@ prompts_dict["manim_generate_title"] = (
 )
 
 prompts_dict["manim_generate_results"] = (
-    "【代码生成铁律 — 必须严格遵守】:\n- 这是一个独立的代码生成任务。不要 read / cat / inspect 工作目录中任何已存在的 .py 文件（它们是历史产物）。当 prompt 提供 \"论文原文路径\" 或 \"图像分析路径\" 时, 请使用 Read 工具读取该 .txt / .json 文件作为参考依据, 但禁止读取任何 .py 历史产物。\n- 直接基于下面给定的论文内容与分析数据，从零开始写完整可运行的 Manim 代码。\n- 输出必须是唯一一个 ```python ... ``` markdown 代码块，包含完整可运行的 Manim Scene。\n- 若工作目录中已有同名场景文件（TitleScene.py / MethodScene.py / IntroScene.py / ResultsScene.py 等），请全部忽略，它们是无关历史产物。\n- 严禁输出 “已有/查看/已经满足需求/不需要修改” 这类描述语。\n\n"
+    "【代码生成铁律 — 必须严格遵守】:\n- 这是一个独立的代码生成任务。不要 read / cat / inspect 工作目录中任何已存在的 .py 文件（它们是历史产物）。当 prompt 提供 \"论文原文路径\" 或 \"图像分析路径\" 时, 请使用 Read 工具读取该 .txt / .json 文件作为参考依据, 但禁止读取任何 .py 历史产物。\n- 严禁使用 Write / Edit / Bash 任何工具：禁止把代码写入 .py 文件、禁止运行 manim 自测渲染、禁止运行任何 shell 命令。唯一允许的产物是 stdout 输出的单个 ```python ... ``` markdown 代码块。\n- 直接基于下面给定的论文内容与分析数据，从零开始写完整可运行的 Manim 代码。\n- 输出必须是唯一一个 ```python ... ``` markdown 代码块，包含完整可运行的 Manim Scene。\n- 若工作目录中已有同名场景文件（TitleScene.py / MethodScene.py / IntroScene.py / ResultsScene.py 等），请全部忽略，它们是无关历史产物。\n- 严禁输出 “已有/查看/已经满足需求/不需要修改” 这类描述语。\n\n"
     "你是 ManimCE (Manim Community Edition) 专家。请生成一个展示论文实验结果的 Manim Scene。\n\n"
     "代码要求：\n"
     "1. 使用 `from manim import *`\n"
@@ -390,7 +390,7 @@ prompts_dict["manim_generate_results"] = (
 # ---- 图像分析增强 Prompts ----
 
 prompts_dict["manim_fix_code"] = (
-    "【代码生成铁律 — 必须严格遵守】:\n- 这是一个独立的代码生成任务。不要 read / cat / inspect 工作目录中任何已存在的 .py 文件（它们是历史产物）。当 prompt 提供 \"论文原文路径\" 或 \"图像分析路径\" 时, 请使用 Read 工具读取该 .txt / .json 文件作为参考依据, 但禁止读取任何 .py 历史产物。\n- 直接基于下面给定的论文内容与分析数据，从零开始写完整可运行的 Manim 代码。\n- 输出必须是唯一一个 ```python ... ``` markdown 代码块，包含完整可运行的 Manim Scene。\n- 若工作目录中已有同名场景文件（TitleScene.py / MethodScene.py / IntroScene.py / ResultsScene.py 等），请全部忽略，它们是无关历史产物。\n- 严禁输出 “已有/查看/已经满足需求/不需要修改” 这类描述语。\n\n"
+    "【代码生成铁律 — 必须严格遵守】:\n- 这是一个独立的代码生成任务。不要 read / cat / inspect 工作目录中任何已存在的 .py 文件（它们是历史产物）。当 prompt 提供 \"论文原文路径\" 或 \"图像分析路径\" 时, 请使用 Read 工具读取该 .txt / .json 文件作为参考依据, 但禁止读取任何 .py 历史产物。\n- 严禁使用 Write / Edit / Bash 任何工具：禁止把代码写入 .py 文件、禁止运行 manim 自测渲染、禁止运行任何 shell 命令。唯一允许的产物是 stdout 输出的单个 ```python ... ``` markdown 代码块。\n- 直接基于下面给定的论文内容与分析数据，从零开始写完整可运行的 Manim 代码。\n- 输出必须是唯一一个 ```python ... ``` markdown 代码块，包含完整可运行的 Manim Scene。\n- 若工作目录中已有同名场景文件（TitleScene.py / MethodScene.py / IntroScene.py / ResultsScene.py 等），请全部忽略，它们是无关历史产物。\n- 严禁输出 “已有/查看/已经满足需求/不需要修改” 这类描述语。\n\n"
     "你是 ManimCE 调试专家。给定一段有错误的 Manim 代码和错误信息，请修复代码并返回完整的修复后代码。\n\n"
     "修复要求：\n"
     "1. 仔细分析错误信息，找到根本原因\n"
@@ -405,7 +405,7 @@ prompts_dict["manim_fix_code"] = (
 )
 
 prompts_dict["manim_generate_architecture_from_figure"] = (
-    "【代码生成铁律 — 必须严格遵守】:\n- 这是一个独立的代码生成任务。不要 read / cat / inspect 工作目录中任何已存在的 .py 文件（它们是历史产物）。当 prompt 提供 \"论文原文路径\" 或 \"图像分析路径\" 时, 请使用 Read 工具读取该 .txt / .json 文件作为参考依据, 但禁止读取任何 .py 历史产物。\n- 直接基于下面给定的论文内容与分析数据，从零开始写完整可运行的 Manim 代码。\n- 输出必须是唯一一个 ```python ... ``` markdown 代码块，包含完整可运行的 Manim Scene。\n- 若工作目录中已有同名场景文件（TitleScene.py / MethodScene.py / IntroScene.py / ResultsScene.py 等），请全部忽略，它们是无关历史产物。\n- 严禁输出 “已有/查看/已经满足需求/不需要修改” 这类描述语。\n\n"
+    "【代码生成铁律 — 必须严格遵守】:\n- 这是一个独立的代码生成任务。不要 read / cat / inspect 工作目录中任何已存在的 .py 文件（它们是历史产物）。当 prompt 提供 \"论文原文路径\" 或 \"图像分析路径\" 时, 请使用 Read 工具读取该 .txt / .json 文件作为参考依据, 但禁止读取任何 .py 历史产物。\n- 严禁使用 Write / Edit / Bash 任何工具：禁止把代码写入 .py 文件、禁止运行 manim 自测渲染、禁止运行任何 shell 命令。唯一允许的产物是 stdout 输出的单个 ```python ... ``` markdown 代码块。\n- 直接基于下面给定的论文内容与分析数据，从零开始写完整可运行的 Manim 代码。\n- 输出必须是唯一一个 ```python ... ``` markdown 代码块，包含完整可运行的 Manim Scene。\n- 若工作目录中已有同名场景文件（TitleScene.py / MethodScene.py / IntroScene.py / ResultsScene.py 等），请全部忽略，它们是无关历史产物。\n- 严禁输出 “已有/查看/已经满足需求/不需要修改” 这类描述语。\n\n"
     "你是 ManimCE (Manim Community Edition) 专家。请根据以下论文方法图的精确元素数据，"
     "生成一个忠实还原该架构图的 Manim Scene 动画。\n\n"
     "【核心原则】：你收到的元素数据包含精确的 Manim 坐标 (move_to 值)、尺寸和颜色。"
