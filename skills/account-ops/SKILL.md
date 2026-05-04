@@ -21,6 +21,8 @@ JushenRenji 项目除了 paper → video 生产链路，还有一条独立的"�
 - `reply` — 跑一次评论回复巡检（默认全平台、最近 168h、最多 10 条视频）
 - `reply --dry-run` — 演练，不真的发评论
 - `reply --platforms bilibili` — 单平台
+- `analyze` — 拉评论批量做态势分析(情绪/意图/优先级/风险), 不发回复, 输出 ASCII 报告
+- `analyze --output tmp/comment_report.json` — 同时落 JSON 报告到项目 tmp/
 - `stats fetch` — 拉一次创作者中心快照写 sqlite
 - `stats summary` — 打印近 7 天数据汇总
 - `stats summary --days 30` — 按天数定制
@@ -50,6 +52,23 @@ Cookie 失效时该平台会日志报错跳过，**不要硬重试**。判定标
 - B 站: `code=-101 账号未登录` → 报告给用户：`config.yaml bilibili.cookies` 过期，需重登
 - 抖音: `cookie 文件不存在` 或 `登录页跳转` → 在 macair 跑 SAU 扫码登录脚本
 - 小红书: `MCP session 失败` → 检查 `docker compose logs xhs-mcp`
+
+### Action: analyze (评论态势分析, 不回复)
+
+```bash
+ssh GSJts 'source ~/miniconda3/etc/profile.d/conda.sh && conda activate paperagent && cd ~/Projects/VlogCutter/JushenRenji && python -m src.distribution.comments.cli --analyze-only --platforms <PLATFORMS> --max-posts 10 [--output tmp/comment_report_<DATE>.json] 2>&1 | tail -120'
+```
+
+走 `src/distribution/comments/analyzer.py`, LLM 一次性批量分析每条评论的:
+- sentiment (positive/neutral/negative)
+- intent (question/praise/spam/troll/suggestion/other)
+- priority (0-100, 高=该优先回复)
+- risk (是否广告/引战/政治敏感)
+- topic (1-3 字主题关键词)
+
+输出按情绪分布 / 意图分布 / 热门话题 / 优先级 Top 10 / 风险评论 5 大段 ASCII 表; 加 `--output` 同时落一份 JSON 报告 (含全部 insights). 该动作只读不写, 不会调 `replied_db`, 不影响后续 `reply` 子动作.
+
+适合: 大量评论积压时让用户先看态势再决定回复策略; 或定期(如每周一) 推一次报告找出值得专门答疑的高优先评论.
 
 ### Action: stats fetch / summary
 

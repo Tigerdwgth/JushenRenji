@@ -222,6 +222,84 @@ def _process_douyin(post: dict, mapping: dict, since: datetime,
     return n
 
 
+def _pull_bilibili(post: dict, mapping: dict, since: datetime) -> list:
+    if "bv" not in mapping:
+        return []
+    from . import bilibili_comments
+    try:
+        return list(bilibili_comments.pull_recent_comments(mapping["bv"], since))
+    except Exception as exc:  # noqa: BLE001
+        logger.error("[cli] bilibili pull (analyze) 失败 bv=%s: %s",
+                     mapping.get("bv"), exc)
+        return []
+
+
+def _pull_xhs(post: dict, mapping: dict, since: datetime) -> list:
+    if "note_id" not in mapping:
+        return []
+    from . import xhs_comments
+    try:
+        return list(xhs_comments.pull_recent_comments(
+            mapping["note_id"], mapping.get("xsec_token", ""), since))
+    except Exception as exc:  # noqa: BLE001
+        logger.error("[cli] xhs pull (analyze) 失败 note=%s: %s",
+                     mapping.get("note_id"), exc)
+        return []
+
+
+def _pull_douyin(post: dict, mapping: dict, since: datetime) -> list:
+    if "aweme_url" not in mapping:
+        return []
+    from . import douyin_comments
+    try:
+        return list(douyin_comments.pull_recent_comments(
+            mapping["aweme_url"], since))
+    except Exception as exc:  # noqa: BLE001
+        logger.error("[cli] douyin pull (analyze) 失败 url=%s: %s",
+                     mapping.get("aweme_url"), exc)
+        return []
+
+
+PLATFORM_PULLS = {
+    "bilibili": _pull_bilibili,
+    "xiaohongshu": _pull_xhs,
+    "douyin": _pull_douyin,
+}
+
+
+def _run_analyze(posts: list, post_ids: dict, platforms: list,
+                 since: datetime, output_path: Optional[str]) -> int:
+    """analyze-only 路径: 拉所有 post 评论 -> LLM 批量分析 -> 报告."""
+    from .analyzer import analyze_comments, summarize_insights, render_report
+    collected: list = []
+    for post in posts:
+        key = _post_key(post)
+        mapping_all = post_ids.get(key, {})
+        for plat in platforms:
+            mapping = mapping_all.get(plat) or {}
+            puller = PLATFORM_PULLS.get(plat)
+            if puller is None:
+                continue
+            for c in puller(post, mapping, since):
+                collected.append((plat, c))
+    logger.info("[cli][analyze] 拉到 %d 条评论, 开始 LLM 批量分析",
+                len(collected))
+    insights = analyze_comments(collected)
+    summary = summarize_insights(insights)
+    print(render_report(summary))
+    if output_path:
+        import json as _json
+        from dataclasses import asdict
+        payload = {
+            "summary": summary,
+            "insights": [asdict(i) for i in insights],
+        }
+        with open(output_path, "w", encoding="utf-8") as f:
+            _json.dump(payload, f, ensure_ascii=False, indent=2)
+        logger.info("[cli][analyze] JSON 报告已写入 %s", output_path)
+    return 0
+
+
 PLATFORM_HANDLERS = {
     "bilibili": _process_bilibili,
     "xiaohongshu": _process_xhs,
@@ -248,6 +326,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--since-hours", type=int, default=72,
                         help="只看 since-hours 小时内的评论")
     parser.add_argument("--log-level", default="INFO")
+    parser.add_argument("--analyze-only", action="store_true",
+                        help="仅分析评论态势, 不生成回复; 走 analyzer 路径打印 ASCII 报告")
+    parser.add_argument("--output", default=None,
+                        help="JSON 报告路径 (含 summary + insights), 仅 --analyze-only 时生效")
     args = parser.parse_args(argv)
 
     logging.basicConfig(
@@ -271,6 +353,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
     post_ids = _load_post_ids(post_ids_json)
     since = datetime.now() - timedelta(hours=args.since_hours)
+    if args.analyze_only:
+        return _run_analyze(posts, post_ids, platforms, since, args.output)
     logger.info("[cli] 处理 %d 条 post, dry_run=%s", len(posts), args.dry_run)
     total = 0
     for post in posts:
