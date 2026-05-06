@@ -241,11 +241,11 @@ if __name__ == "__main__":
                             _cover_seg = os.path.join(_proj_cache, "_cover_seg.mp4")
                             _sp.check_call([
                                 "/usr/bin/ffmpeg", "-v", "warning", "-y",
-                                "-loop", "1", "-framerate", "30", "-t", "2", "-i", _cover_path,
-                                "-f", "lavfi", "-t", "2", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+                                "-loop", "1", "-framerate", "30", "-i", _cover_path,
+                                "-f", "lavfi", "-t", "0.04", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
                                 "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p",
                                 "-c:v", "libx264", "-pix_fmt", "yuv420p",
-                                "-c:a", "aac", "-shortest", _cover_seg,
+                                "-frames:v", "1", "-c:a", "aac", "-shortest", _cover_seg,
                             ])
                             _sp.check_call([
                                 "/usr/bin/ffmpeg", "-v", "warning", "-y",
@@ -261,7 +261,7 @@ if __name__ == "__main__":
                                 os.remove(_cover_seg)
                             except Exception:
                                 pass
-                            logging.info("Cover prepend (2s) + Manim 拼接成功: %s", path)
+                            logging.info("Cover prepend (1 frame) + Manim 拼接成功: %s", path)
                         else:
                             # 无 Gemini 封面: 退化为原 ffmpeg copy + faststart (manim 直出)
                             logging.warning("未找到 Gemini 封面 %s, 跳过 prepend, 直接 copy manim", _cover_path)
