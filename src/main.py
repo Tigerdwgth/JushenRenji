@@ -250,6 +250,22 @@ if __name__ == "__main__":
 
         video_path = path
         cover_path = path.replace(".mp4", ".png")
+        # 若没有显式封面 (manim-only 模式不会产 cover), 从主视频抽首帧 (跳 0.5s 避开 fade-in 黑屏)
+        if not os.path.exists(cover_path) and os.path.exists(video_path):
+            try:
+                import subprocess as _cov_sp
+                _cov_sp.check_call([
+                    "/usr/bin/ffmpeg", "-y", "-v", "warning",
+                    "-ss", "0.5", "-i", video_path, "-vframes", "1", cover_path,
+                ])
+                logging.warning("未找到 Gemini/DashScope 设计封面, 降级为 ffmpeg 抽首帧: %s", cover_path)
+            except Exception as _cov_e:
+                logging.warning("首帧封面抽取失败 (上传将不带封面): %s", _cov_e)
+                if os.path.exists(cover_path):
+                    try:
+                        os.remove(cover_path)
+                    except Exception:
+                        pass
         video_title = cn_titles[0] if len(titles) == 1 else f"Arxiv具身日报{today}"
         # B站标题限制80字符，超出则截断
         if len(video_title) > 78:

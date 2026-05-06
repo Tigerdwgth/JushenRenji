@@ -668,8 +668,9 @@ def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().str
         
         # 单篇论文时在循环内生成封面（循环只执行一次）
         # 多篇论文时封面在循环外、合并视频后统一生成，避免每次迭代覆盖同一文件
-        # skip_main_video 模式 (manim-only): 跳过封面合成节省时间, 上传链路若需要 cover 由 manim 阶段补
-        if len(papers) == 1 and not skip_main_video:
+        # skip_main_video 模式仍然跑 generate_cover (Gemini → DashScope fallback),
+        # 否则上传到 B站/小红书会缺真正的设计封面 (光靠 ffmpeg 抽首帧是低质截图)
+        if len(papers) == 1:
             try:
                 generate_cover('./pic/1.png', cn_title, output_filename.replace(".mp4", ".png"), paper_abstract=paper_abstract)
             except Exception as e:

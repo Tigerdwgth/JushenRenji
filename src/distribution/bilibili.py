@@ -37,17 +37,24 @@ def _load_cookies_from_config() -> Optional[dict]:
     bili_jct = cookies.get("bili_jct", "")
     dedeuserid = cookies.get("dedeuserid", "")
     dedeuserid_ckmd5 = cookies.get("dedeuserid_ckmd5", "")
+    buvid3 = cookies.get("buvid3", "")
+    buvid4 = cookies.get("buvid4", "")
+    ac_time_value = cookies.get("ac_time_value", "")
 
     if not sessdata or not bili_jct:
         logger.warning("bilibili_cookies 中缺少 sessdata 或 bili_jct")
         return None
 
-    return {
+    out = {
         "SESSDATA": str(sessdata),
         "bili_jct": str(bili_jct),
         "DedeUserID": str(dedeuserid),
         "DedeUserID__ckMd5": str(dedeuserid_ckmd5),
     }
+    if buvid3: out["buvid3"] = str(buvid3)
+    if buvid4: out["buvid4"] = str(buvid4)
+    if ac_time_value: out["ac_time_value"] = str(ac_time_value)
+    return out
 
 
 def _load_cookies_from_pkl(pkl_path: str) -> Optional[dict]:
@@ -156,12 +163,14 @@ def _create_cookie_json_file(cookies_dict: dict) -> str:
 
 def _login_with_cookies(bili: BiliBili, cookies_dict: dict) -> bool:
     """使用 cookie dict 直接登录 biliup 实例。"""
-    import requests.utils
-
     try:
-        requests.utils.add_dict_to_cookiejar(
-            bili._BiliBili__session.cookies, cookies_dict
-        )
+        # 必须指定 domain, 否则 cookies 不会被发到 .bilibili.com
+        # (add_dict_to_cookiejar 默认 domain=None 会导致请求不携带 cookie)
+        for _name, _value in cookies_dict.items():
+            if _value:
+                bili._BiliBili__session.cookies.set(
+                    _name, _value, domain=".bilibili.com", path="/"
+                )
         bili._BiliBili__bili_jct = cookies_dict.get("bili_jct", "")
         # 注入 User-Agent 防止 B站 412 风控
         bili._BiliBili__session.headers.update({
