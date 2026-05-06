@@ -225,21 +225,59 @@ if __name__ == "__main__":
                 if manim_path:
                     logging.info("Manim 演示视频已生成: %s", manim_path)
                     print(f"Manim output: {manim_path}")
-                    # 只保留 Manim 版本: 用 ffmpeg copy 把 manim_path remux 到 path 位置
-                    # (含 +faststart, 满足 B站/小红书/抖音流式播放要求)
-                    # 之前的 manim+main 拼接已废弃: 用户反馈不需要主视频片段
+                    # 把 Gemini cover.png prepend 成视频前 2 秒静止帧 (含静音音轨),
+                    # 再 concat manim_path. 这样平台 (小红书/抖音) 自动取首帧时
+                    # 拿到的就是设计封面, 而不是 manim 第一帧的淡入黑屏.
+                    # B 站仍走显式 cover_path 上传, 不依赖此处.
                     try:
                         import subprocess as _sp
                         _proj_cache = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cache")
                         os.makedirs(_proj_cache, exist_ok=True)
-                        manim_only_tmp = os.path.join(_proj_cache, os.path.basename(path) + ".manim_only_tmp.mp4")
-                        _sp.check_call(["/usr/bin/ffmpeg", "-v", "warning", "-y",
-                                        "-i", manim_path, "-c", "copy",
-                                        "-movflags", "+faststart", manim_only_tmp])
-                        os.replace(manim_only_tmp, path)
-                        logging.info("仅保留 Manim 版本 (+faststart): %s", path)
+                        _cover_path = path.replace(".mp4", ".png")
+                        _final_tmp = os.path.join(_proj_cache, os.path.basename(path) + ".cover_prepend.mp4")
+                        if os.path.exists(_cover_path):
+                            # cover.png + 静音 → 2s segment + concat manim_path → final
+                            # concat filter 会重编码 (~5-10s 额外耗时), 但保证 codec 一致
+                            _cover_seg = os.path.join(_proj_cache, "_cover_seg.mp4")
+                            _sp.check_call([
+                                "/usr/bin/ffmpeg", "-v", "warning", "-y",
+                                "-loop", "1", "-framerate", "30", "-t", "2", "-i", _cover_path,
+                                "-f", "lavfi", "-t", "2", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+                                "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p",
+                                "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                                "-c:a", "aac", "-shortest", _cover_seg,
+                            ])
+                            _sp.check_call([
+                                "/usr/bin/ffmpeg", "-v", "warning", "-y",
+                                "-i", _cover_seg, "-i", manim_path,
+                                "-filter_complex",
+                                "[0:v][0:a][1:v][1:a]concat=n=2:v=1:a=1[v][a]",
+                                "-map", "[v]", "-map", "[a]",
+                                "-c:v", "libx264", "-c:a", "aac", "-pix_fmt", "yuv420p",
+                                "-movflags", "+faststart", _final_tmp,
+                            ])
+                            os.replace(_final_tmp, path)
+                            try:
+                                os.remove(_cover_seg)
+                            except Exception:
+                                pass
+                            logging.info("Cover prepend (2s) + Manim 拼接成功: %s", path)
+                        else:
+                            # 无 Gemini 封面: 退化为原 ffmpeg copy + faststart (manim 直出)
+                            logging.warning("未找到 Gemini 封面 %s, 跳过 prepend, 直接 copy manim", _cover_path)
+                            _sp.check_call(["/usr/bin/ffmpeg", "-v", "warning", "-y",
+                                            "-i", manim_path, "-c", "copy",
+                                            "-movflags", "+faststart", _final_tmp])
+                            os.replace(_final_tmp, path)
                     except Exception as e:
-                        logging.warning("Manim 替换主视频失败，保留主视频作为兜底: %s", e)
+                        logging.warning("Cover prepend 失败, 退化原始 manim copy: %s", e)
+                        try:
+                            import subprocess as _sp_fb
+                            _sp_fb.check_call(["/usr/bin/ffmpeg", "-v", "warning", "-y",
+                                               "-i", manim_path, "-c", "copy",
+                                               "-movflags", "+faststart", path])
+                        except Exception as e2:
+                            logging.error("Manim 替换主视频失败 (无可用兜底): %s", e2)
                 else:
                     logging.error("Manim 演示视频生成失败")
             else:
