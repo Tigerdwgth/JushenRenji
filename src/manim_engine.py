@@ -590,17 +590,10 @@ class ManimEngine:
             narrations: 与场景一一对应的讲解词列表。
         """
         try:
-            import dashscope
-            from dashscope.audio.tts_v2 import SpeechSynthesizer
             try:
-                from src.utils.audio_helpers import get_tts_config
+                from src.utils.audio_helpers import get_tts_config, synthesize_tts
             except ImportError:
-                from utils.audio_helpers import get_tts_config  # type: ignore
-
-            config = self._get_config()
-            ds_key = config.get("dashscope_api_key", "")
-            if ds_key:
-                dashscope.api_key = ds_key
+                from utils.audio_helpers import get_tts_config, synthesize_tts  # type: ignore
 
             tts_model, tts_voice = get_tts_config()
             logger.info("Manim TTS 配置 model=%s voice=%s", tts_model, tts_voice)
@@ -611,8 +604,11 @@ class ManimEngine:
                     continue
 
                 audio_path = os.path.join(self.temp_dir, f"tts_{i}.mp3")
-                synthesizer = SpeechSynthesizer(model=tts_model, voice=tts_voice)
-                audio_data = synthesizer.call(text)
+                try:
+                    audio_data = synthesize_tts(text)
+                except Exception as _tts_exc:
+                    logger.warning("[manim-tts] 第 %d 段合成失败: %s", i, _tts_exc)
+                    audio_data = None
 
                 if audio_data:
                     with open(audio_path, "wb") as f:

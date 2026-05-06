@@ -424,3 +424,154 @@ def get_audio_info(file_path: str) -> dict:
         audio_logger.error(f"获取音频信息失败 {file_path}: {e}")
 
     return info
+
+
+
+# ---------------------------------------------------------------------------
+# TTS 后端统一入口 (新加, 向前兼容老 dashscope 调用)
+# ---------------------------------------------------------------------------
+
+def _resolve_minimax_key() -> Optional[str]:
+    """读取 MiniMax api_key, 优先 env 后 config."""
+    k = os.getenv("JSR_MINIMAX_API_KEY")
+    if k:
+        return k
+    try:
+        try:
+            from src.config import _config  # type: ignore
+        except ImportError:
+            from config import _config  # type: ignore
+        return _config.get("minimax_api_key") or None
+    except Exception:
+        return None
+
+
+def _resolve_minimax_voice() -> str:
+    """读取 MiniMax voice_id, 优先 env > config > 默认 male-qn-qingse.
+    JSR_TTS_VOICE 设了非 longxiaochun_v2 的值时也用作 voice_id."""
+    v = os.getenv("JSR_MINIMAX_VOICE_ID") or os.getenv("JSR_TTS_VOICE")
+    if v and v != "longxiaochun_v2":
+        return v
+    try:
+        try:
+            from src.config import _config  # type: ignore
+        except ImportError:
+            from config import _config  # type: ignore
+        cv = _config.get("minimax_voice_id") or _config.get("tts_voice")
+        if cv and cv != "longxiaochun_v2":
+            return cv
+    except Exception:
+        pass
+    return "male-qn-qingse"
+
+
+def _is_minimax_model(model: str) -> bool:
+    if not model:
+        return False
+    m = model.lower()
+    return "speech" in m or "minimax" in m
+
+
+def _synthesize_dashscope(text: str, model: str, voice: str) -> bytes:
+    """老路径包装: dashscope.audio.tts_v2.SpeechSynthesizer."""
+    import dashscope  # noqa: F401  保留 import 触发 SDK 全局 api_key 注入
+    from dashscope.audio.tts_v2 import SpeechSynthesizer
+    try:
+        try:
+            from src.config import _config  # type: ignore
+        except ImportError:
+            from config import _config  # type: ignore
+        ds_key = _config.get("dashscope_api_key") or ""
+        if ds_key:
+            dashscope.api_key = ds_key
+    except Exception:
+        pass
+    ss = SpeechSynthesizer(model=model, voice=voice)
+    data = ss.call(text)
+    if not data:
+        raise RuntimeError(f"dashscope TTS 返回空 (model={model}, voice={voice})")
+    return data
+
+
+def synthesize_tts(text: str) -> bytes:
+    """统一 TTS 入口, 按 model 路由 minimax / dashscope.
+
+    返回 mp3 bytes (与 dashscope SpeechSynthesizer.call 兼容).
+    失败 (含 minimax 失败 + dashscope fallback 也失败) raise RuntimeError.
+    """
+    model, voice = get_tts_config()
+    if _is_minimax_model(model):
+        from .tts_minimax import synthesize_minimax, MiniMaxTTSError  # type: ignore
+        api_key = _resolve_minimax_key()
+        voice_id = _resolve_minimax_voice()
+        if not api_key:
+            audio_logger.warning(
+                "MiniMax model=%s 但 minimax_api_key 缺失, fallback dashscope", model
+            )
+            return _synthesize_dashscope(text, "cosyvoice-v2", "longxiaochun_v2")
+        try:
+            return synthesize_minimax(
+                text, api_key=api_key, model=model, voice_id=voice_id
+            )
+        except MiniMaxTTSError as exc:
+            audio_logger.warning(
+                "MiniMax TTS 失败, fallback dashscope: %s", exc
+            )
+            return _synthesize_dashscope(text, "cosyvoice-v2", "longxiaochun_v2")
+    # 默认老路径
+    return _synthesize_dashscope(text, model, voice)
+
+
+
+class _MiniMaxSynthesizerAdapter:
+    """SS-like adapter, 给老调用方 ss.call(text) 模式用."""
+    def __init__(self, model: str, voice_id: str, api_key: str):
+        self._model = model
+        self._voice_id = voice_id
+        self._api_key = api_key
+
+    def call(self, text: str):
+        from .tts_minimax import synthesize_minimax, MiniMaxTTSError  # type: ignore
+        try:
+            return synthesize_minimax(
+                text, api_key=self._api_key,
+                model=self._model, voice_id=self._voice_id,
+            )
+        except MiniMaxTTSError as exc:
+            audio_logger.warning("MiniMax adapter 调用失败: %s", exc)
+            return None  # 模仿 dashscope 失败时返回空
+
+
+def make_tts_synthesizer():
+    """工厂方法: 返回 SS-like 对象 (有 .call(text) -> bytes 接口).
+
+    按 get_tts_config() 选 minimax / dashscope; 默认仍 dashscope.
+    给 video_creator 老链路 (safe_tts_save(ss, ...)) 用, 老接口 0 改动.
+    """
+    model, voice = get_tts_config()
+    if _is_minimax_model(model):
+        api_key = _resolve_minimax_key()
+        if not api_key:
+            audio_logger.warning(
+                "MiniMax model=%s 但 minimax_api_key 缺失, factory 退化为 dashscope cosyvoice-v2",
+                model,
+            )
+            from dashscope.audio.tts_v2 import SpeechSynthesizer
+            return SpeechSynthesizer(model="cosyvoice-v2", voice="longxiaochun_v2")
+        return _MiniMaxSynthesizerAdapter(
+            model=model, voice_id=_resolve_minimax_voice(), api_key=api_key,
+        )
+    # 默认老路径
+    import dashscope  # noqa: F401
+    from dashscope.audio.tts_v2 import SpeechSynthesizer
+    try:
+        try:
+            from src.config import _config  # type: ignore
+        except ImportError:
+            from config import _config  # type: ignore
+        ds_key = _config.get("dashscope_api_key") or ""
+        if ds_key:
+            dashscope.api_key = ds_key
+    except Exception:
+        pass
+    return SpeechSynthesizer(model=model, voice=voice)

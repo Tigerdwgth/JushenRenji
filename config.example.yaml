@@ -11,6 +11,14 @@ bilibili_cookies:
 
 cache_dir: ./cache
 dashscope_api_key: your_dashscope_api_key_here
+
+# TTS 后端选择 (向前兼容):
+# - 默认 cosyvoice-v2 (DashScope/longxiaochun_v2)
+# - 切换到 MiniMax: 把下面三行取消注释 + 填 minimax_api_key
+# tts_model: speech-2.8-hd
+# tts_voice: male-qn-qingse  # MiniMax voice_id (其他: female-shaonv 等, 见 minimaxi 文档)
+# minimax_api_key: your_minimax_api_key_here
+# minimax_voice_id: male-qn-qingse  # 可选, 优先级低于 tts_voice
 font_path: ./font/SIMHEI.TTF
 llm_api_key: your_llm_api_key_here
 output_dir: ./output

@@ -73,8 +73,12 @@ def test_audio_generation(text, idx):
     logging.info(f"测试音频生成 {idx}: {text[:30]}...")
 
     _model, _voice = get_tts_config()
-    ss = SpeechSynthesizer(model=_model, voice=_voice)
-    data = ss.call(text=text)
+    try:
+        from src.utils.audio_helpers import make_tts_synthesizer
+    except ImportError:
+        from utils.audio_helpers import make_tts_synthesizer  # type: ignore
+    ss = make_tts_synthesizer()
+    data = ss.call(text=text) if hasattr(ss, "call") else None
 
     if not data:
         logging.error(f"TTS返回空数据 idx={idx}")
@@ -620,7 +624,11 @@ class VideoCreator:
 
         def _tts_single(text, audio_file, tag):
             try:
-                ss = SpeechSynthesizer(model=tts_model, voice=tts_voice)
+                try:
+                    from src.utils.audio_helpers import make_tts_synthesizer
+                except ImportError:
+                    from utils.audio_helpers import make_tts_synthesizer  # type: ignore
+                ss = make_tts_synthesizer()
                 result_path = safe_tts_save(ss, text, audio_file, tag)
                 if not result_path or not os.path.exists(result_path):
                     return None
