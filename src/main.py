@@ -51,6 +51,14 @@ def parse_args():
         default=None,
         help="Path to discovery profile yaml (default: config/discovery_profile.yaml).",
     )
+    parser.add_argument(
+        "--blog-url",
+        type=str,
+        default=None,
+        help="Generic blog/article URL (e.g. https://www.genesis.ai/blog/...). "
+             "Mutually exclusive with --paper-link / --filename / --discover. "
+             "Pipeline 抓取 HTML 文本 + 图片 + 视频, 嵌入最终 mp4.",
+    )
     #output length
     parser.add_argument(
         "--video_length",
@@ -128,8 +136,22 @@ if __name__ == "__main__":
     try:
         paper_link = getattr(args, "paper_link", None)
         discover_topic = getattr(args, "discover", None)
-        if discover_topic and (paper_link or filename):
-            raise ValueError("--discover 与 --paper-link / --filename 互斥，请只传一个")
+        blog_url = getattr(args, "blog_url", None)
+        # 四选一互斥
+        _given = sum(1 for x in (paper_link, filename, discover_topic, blog_url) if x)
+        if _given > 1:
+            raise ValueError(
+                "--paper-link / --filename / --discover / --blog-url 互斥, 请只传一个"
+            )
+        if blog_url:
+            # blog 模式: 没 LaTeX 源码 → 关掉 figure_grounded, 走 caption-only baseline
+            os.environ["PAPERIFY_DISABLE_FIGURE_GROUNDED"] = "1"
+            # 防御: blog 模式开头主动删 cached_pdf.pdf, 防 paper-link 残留误触发兜底
+            try:
+                if os.path.exists("./cache/cached_pdf.pdf"):
+                    os.remove("./cache/cached_pdf.pdf")
+            except Exception as _e:
+                logging.warning("[blog-url] 清理旧 cached_pdf.pdf 失败: %s", _e)
         today_dt = datetime.datetime.now()
         today = today_dt.strftime(r"%Y-%m-%d")
         if discover_topic:
@@ -155,9 +177,21 @@ if __name__ == "__main__":
             filename = meta["title"]
             yesterday = meta["submitted_date"] or meta["updated_date"]
             logging.info("[paper-link] id=%s title=%s date=%s", arxiv_id, filename[:80], yesterday)
+        elif blog_url:
+            # blog 模式: 提前抓 metadata 用于 filename / yesterday;
+            # generate_daily_arxiv_summary 内部还会 materialize 写 cache.
+            from src.blog_pipeline import fetch_blog_assets
+            _blog_meta = fetch_blog_assets(blog_url)
+            filename = _blog_meta["title"]
+            yesterday = _blog_meta.get("published_date") or today
+            arxiv_id = "blog-" + __import__("hashlib").md5(blog_url.encode()).hexdigest()[:8]
+            logging.info("[blog-url] title=%s date=%s images=%d videos=%d",
+                         (filename or "")[:80], yesterday,
+                         len(_blog_meta.get("image_urls", [])),
+                         len(_blog_meta.get("video_urls", [])))
         else:
             if not filename:
-                raise ValueError("必须给 --discover <topic> / --paper-link <url> / --filename <query> 之一")
+                raise ValueError("必须给 --discover <topic> / --paper-link <url> / --filename <query> / --blog-url <url> 之一")
             weekday = today_dt.weekday()
             delta_days = {0: 3, 6: 2, 5: 1}.get(weekday, 1)
             yesterday = (today_dt - datetime.timedelta(days=delta_days)).strftime(r"%Y-%m-%d")
@@ -170,6 +204,7 @@ if __name__ == "__main__":
             target_duration=target_duration,
             paper_link=paper_link,
             skip_main_video=manim_mode,
+            blog_url=blog_url,
         )
         if manim_mode:
             # manim-only 模式: path 此时是预定路径还不存在, 由后续 ManimEngine 写入
@@ -262,6 +297,59 @@ if __name__ == "__main__":
                             except Exception:
                                 pass
                             logging.info("Cover prepend (1 frame) + Manim 拼接成功: %s", path)
+                        # blog 模式: 在 path 末尾追加 ./cache/blog_clips/*.mp4 (单 clip ≤30s, 总 ≤90s)
+                        try:
+                            import glob as _gl
+                            _clip_files = sorted(
+                                _gl.glob("./cache/blog_clips/*.mp4"),
+                                key=lambda p: int(__import__("re").findall(r"\d+", os.path.basename(p))[0])
+                                if __import__("re").findall(r"\d+", os.path.basename(p)) else 0,
+                            )
+                            if _clip_files:
+                                _budget_remaining = 90  # 秒
+                                _normalized_clips = []
+                                for _ci, _clip in enumerate(_clip_files):
+                                    if _budget_remaining <= 5:
+                                        break
+                                    _per_clip = min(30, _budget_remaining)
+                                    _norm = os.path.join(_proj_cache, f"_blog_clip_norm_{_ci}.mp4")
+                                    try:
+                                        _sp.check_call([
+                                            "/usr/bin/ffmpeg", "-v", "warning", "-y",
+                                            "-t", str(_per_clip), "-i", _clip,
+                                            "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,"
+                                                   "pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p",
+                                            "-r", "30", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                                            "-c:a", "aac", "-ar", "44100", "-ac", "2",
+                                            "-shortest", _norm,
+                                        ])
+                                        _normalized_clips.append(_norm)
+                                        _budget_remaining -= _per_clip
+                                    except Exception as _norm_e:
+                                        logging.warning("blog clip 归一化失败 %s: %s", _clip, _norm_e)
+                                if _normalized_clips:
+                                    # concat path + 所有 normalized clips
+                                    _inputs = ["-i", path]
+                                    for _c in _normalized_clips:
+                                        _inputs.extend(["-i", _c])
+                                    _n = 1 + len(_normalized_clips)
+                                    _filter = "".join(f"[{i}:v][{i}:a]" for i in range(_n)) + f"concat=n={_n}:v=1:a=1[v][a]"
+                                    _final2 = os.path.join(_proj_cache, os.path.basename(path) + ".with_blog.mp4")
+                                    _sp.check_call([
+                                        "/usr/bin/ffmpeg", "-v", "warning", "-y",
+                                        *_inputs, "-filter_complex", _filter,
+                                        "-map", "[v]", "-map", "[a]",
+                                        "-c:v", "libx264", "-c:a", "aac", "-pix_fmt", "yuv420p",
+                                        "-movflags", "+faststart", _final2,
+                                    ])
+                                    os.replace(_final2, path)
+                                    for _c in _normalized_clips:
+                                        try: os.remove(_c)
+                                        except Exception: pass
+                                    logging.info("追加 blog clips %d 段, 共 %ds: %s",
+                                                 len(_normalized_clips), 90 - _budget_remaining, path)
+                        except Exception as _blog_append_e:
+                            logging.warning("blog clips append 失败 (主视频不受影响): %s", _blog_append_e)
                         else:
                             # 无 Gemini 封面: 退化为原 ffmpeg copy + faststart (manim 直出)
                             logging.warning("未找到 Gemini 封面 %s, 跳过 prepend, 直接 copy manim", _cover_path)

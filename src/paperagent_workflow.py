@@ -477,7 +477,7 @@ def download_if_remote(pdf_file_path):
         return -1
     return pdf_file_path
 
-def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().strftime(r"%Y-%m-%d"), max_papers=20, output_filename="./output/daily_summary.mp4",long_or_short="short",target_duration=300, paper_link=None, skip_main_video=False):
+def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().strftime(r"%Y-%m-%d"), max_papers=20, output_filename="./output/daily_summary.mp4",long_or_short="short",target_duration=300, paper_link=None, skip_main_video=False, blog_url=None):
     """
     为每天 arXiv 上的论文生成一个简短的日报性总结视频。
     参数：
@@ -505,6 +505,28 @@ def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().str
             comments="",
         )]
         logging.info(f"[paper-link] 精确拉取单篇: id={arxiv_id} title={meta['title'][:80]}")
+    elif blog_url:
+        # blog 模式: 抓 HTML / 图 / 视频 写到 cache, 构造伪 Paper 跳 PDF 流程
+        try:
+            from src.blog_pipeline import materialize_blog_as_paper_cache  # type: ignore
+        except ImportError:
+            from blog_pipeline import materialize_blog_as_paper_cache  # type: ignore
+        blog_record = materialize_blog_as_paper_cache(blog_url)
+        submitted = blog_record.get("published_date") or ""
+        papers = [Paper(
+            title=blog_record["title"] or blog_url,
+            authors=[],
+            abstract=(blog_record.get("description") or "")[:1000],
+            link="",  # 空字符串 -> 后续 download_if_remote 跳过
+            announced_date=submitted + "T00:00:00Z" if submitted else "",
+            submitted_date=submitted + "T00:00:00Z" if submitted else "",
+            comments="",
+        )]
+        logging.info(
+            f"[blog-url] 抓取完成: title={(blog_record['title'] or '')[:80]} "
+            f"images={len(blog_record.get('image_paths', []))} "
+            f"clips={len(blog_record.get('clip_paths', []))}"
+        )
     else:
         # 获取最新的论文
         papers = get_paper_from_arxiv(query=query)
@@ -542,20 +564,40 @@ def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().str
 
     for paper_idx, paper in enumerate(papers):
         logging.info(f"处理第 {paper_idx + 1} 篇论文: {paper.title}")
-        # 下载论文 PDF
-        pdf_url = paper.link.replace("abs", "pdf").split('v1')[0]
-        pdf_file_path = download_if_remote(pdf_url)
-        if not pdf_file_path or pdf_file_path == -1:
-            logging.warning(f"无法下载或找到 PDF 文件: {pdf_url}")
-            continue
-        
-        # 创建 PDF 处理器实例
-        pdf_processor = PDFProcessor(pdf_file_path)
-        
-        # 提取文本和图片
-        logging.info("提取 PDF 文本和图片")
-        text = pdf_processor.extract_text()
-        images = process_pdf_images(pdf_processor, cnt=2 if long_or_short == "short" else None)
+        if blog_url:
+            # blog 模式: 跳过 PDF 下载 + PDFProcessor, 用 cache/paper_text.txt + ./pic/*.png
+            logging.info("[blog-url] 跳过 PDF 流程, 从 cache 读取文本/图片")
+            pdf_file_path = None
+            pdf_processor = None
+            paper_text_path = "./cache/paper_text.txt"
+            if os.path.exists(paper_text_path):
+                with open(paper_text_path, "r", encoding="utf-8") as _bf:
+                    text = _bf.read()
+            else:
+                text = (paper.abstract or paper.title or "")
+            import glob as _glob
+            images = sorted(
+                _glob.glob("./pic/*.png"),
+                key=lambda p: int(re.findall(r"\d+", os.path.basename(p))[0])
+                if re.findall(r"\d+", os.path.basename(p)) else 0,
+            )
+            if long_or_short == "short" and len(images) > 2:
+                images = images[:2]
+        else:
+            # 下载论文 PDF
+            pdf_url = paper.link.replace("abs", "pdf").split('v1')[0]
+            pdf_file_path = download_if_remote(pdf_url)
+            if not pdf_file_path or pdf_file_path == -1:
+                logging.warning(f"无法下载或找到 PDF 文件: {pdf_url}")
+                continue
+
+            # 创建 PDF 处理器实例
+            pdf_processor = PDFProcessor(pdf_file_path)
+
+            # 提取文本和图片
+            logging.info("提取 PDF 文本和图片")
+            text = pdf_processor.extract_text()
+            images = process_pdf_images(pdf_processor, cnt=2 if long_or_short == "short" else None)
         paper_abstract = paper.abstract.strip() if getattr(paper, "abstract", None) else extract_abstract_from_text(text)
 
         # 对提取到的图片尝试做图像解释并保存
@@ -564,7 +606,7 @@ def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().str
             image_agent = ImageAgent()
             # reuse extract_captions_from_pdf if available
             try:
-                contexts_dict = extract_captions_from_pdf(pdf_file_path) if 'extract_captions_from_pdf' in globals() else {}
+                contexts_dict = extract_captions_from_pdf(pdf_file_path) if (pdf_file_path and 'extract_captions_from_pdf' in globals()) else {}
             except Exception:
                 contexts_dict = {}
             contexts = {}
