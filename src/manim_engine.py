@@ -639,7 +639,7 @@ class ManimEngine:
     # 拼接
     # ------------------------------------------------------------------
 
-    def compose(self, scene_videos, tts_audio=None, fmt="mp4", scene_image_paths=None, narration_audios=None):
+    def compose(self, scene_videos, tts_audio=None, fmt="mp4", scene_image_paths=None, narration_audios=None, blog_scene_videos=None):
         """拼接所有场景视频为完整演示。"""
         import numpy as np
         from PIL import Image as PILImage
@@ -654,6 +654,27 @@ class ManimEngine:
         final_clips = []
 
         for idx, vpath in enumerate(scene_videos):
+            # blog 分支: 该 scene 用 blog video 替代 manim 渲染, 走 align_video_to_tts 替换音轨
+            if (blog_scene_videos and idx in blog_scene_videos
+                    and narration_audios and idx < len(narration_audios)
+                    and narration_audios[idx]):
+                try:
+                    from src import blog_video_overlay
+                    blog_clip = blog_scene_videos[idx]
+                    tts_path = narration_audios[idx]
+                    aligned_path = os.path.join(
+                        self.output_dir, f"_blog_scene_{idx}.mp4"
+                    )
+                    blog_video_overlay.align_video_to_tts(blog_clip, tts_path, aligned_path)
+                    video = VideoFileClip(aligned_path)
+                    final_clips.append(video)
+                    logger.info("[blog-overlay] scene %d: blog video %s + TTS 解说 (%s)",
+                                idx, os.path.basename(blog_clip), os.path.basename(tts_path))
+                    continue
+                except Exception as e:
+                    logger.warning("[blog-overlay] scene %d align 失败, fallback 老路径: %s", idx, e)
+                    # 失败时退回老逻辑 (vpath 是 blog clip 原文件, 当普通视频处理)
+
             try:
                 video = VideoFileClip(vpath)
             except Exception as e:
@@ -914,13 +935,43 @@ class ManimEngine:
             figure_analysis_result["eb_manim_elements"] = ""
             logger.info("[ablation] PAPERIFY_DISABLE_FIGURE_GROUNDED=1 -> cleared eb_manim_elements (caption-only baseline)")
 
-        # 4. Generate + render each scene
+        # 3.6 blog 模式: 检测 ./cache/blog_meta.json + 把 blog clip 分配到 method/results scene
+        # (paper-link 路径不会有 blog_meta.json, 所以这段对老链路 0 影响)
+        self._blog_scene_assignments = {}
+        try:
+            blog_meta_p = "./cache/blog_meta.json"
+            if os.path.exists(blog_meta_p):
+                import json as _json
+                with open(blog_meta_p, "r", encoding="utf-8") as _bf:
+                    _bm = _json.load(_bf)
+                _clip_meta = _bm.get("clip_meta") or []
+                if _clip_meta:
+                    from src import blog_video_overlay
+                    self._blog_scene_assignments = blog_video_overlay.assign_blog_clips_to_scenes(
+                        _clip_meta, total_scenes=len(scene_defs),
+                    )
+                    logger.info("[blog-overlay] 检测到 blog 模式, scene 分配: %s",
+                                self._blog_scene_assignments)
+        except Exception as _e:
+            logger.warning("[blog-overlay] 读 blog_meta.json 失败 (退化为纯 manim): %s", _e)
+            self._blog_scene_assignments = {}
+
+        # 4. Generate + render each scene (blog 注入 scene 跳过 manim 渲染)
         scene_videos = []
         rendered_indices = []
         for i, sdef in enumerate(scene_defs):
             # [ablation] PAPERIFY_METHOD_ONLY: skip non-method scenes for case-study runs
             if os.getenv("PAPERIFY_METHOD_ONLY") and sdef["type"] != "architecture":
                 logger.info("[ablation] skipping %s (PAPERIFY_METHOD_ONLY=1)", sdef["scene_name"])
+                continue
+            # blog 注入 scene: 不调 manim, 直接把 blog clip 放进 scene_videos
+            # (compose 内部按 idx 检查 blog_scene_assignments 走 align 分支)
+            if i in self._blog_scene_assignments:
+                _blog_clip = self._blog_scene_assignments[i]
+                scene_videos.append(_blog_clip)
+                rendered_indices.append(i)
+                logger.info("[blog-overlay] scene %d (%s) 用 blog clip 替代 manim 渲染: %s",
+                            i, sdef["scene_name"], _blog_clip)
                 continue
             logger.info("生成场景 %d/4: %s (%s)", i + 1, sdef["scene_name"], sdef["type"])
 
@@ -968,6 +1019,7 @@ class ManimEngine:
             fmt=fmt,
             scene_image_paths=scene_image_paths,
             narration_audios=audio_paths,
+            blog_scene_videos=self._blog_scene_assignments or None,
         )
 
         if output:

@@ -39,6 +39,11 @@ DEFAULT_ASSET_TIMEOUT = 120
 DEFAULT_MAX_IMAGES = 5
 DEFAULT_MAX_VIDEOS = 3
 ICON_MIN_AREA = 100 * 100  # 小于该面积视为 icon, 过滤
+MIN_INLINE_WIDTH = 800  # inline <img> 至少要这么宽 (网页缩略图普遍 <800, 模糊)
+IMAGE_URL_BLACKLIST = (
+    "avatar", "icon", "thumb", "logo", "favicon", "sprite",
+    "/icons/", "/avatars/", "/logos/", "_thumb",
+)
 SUPPORTED_VIDEO_EXTS = (".mp4", ".webm")
 ARTICLE_TAGS = ("article", "main")
 PARAGRAPH_TAGS = ("p", "h1", "h2", "h3", "h4", "li")
@@ -140,6 +145,33 @@ def extract_published_date(soup: BeautifulSoup, html: str) -> str:
 # Image / Video URL extraction
 # ---------------------------------------------------------------------------
 
+def _extract_meta_image_urls(soup: BeautifulSoup, base_url: str) -> List[str]:
+    """从 <meta og:image> / <meta twitter:image> / <link rel="image_src"> 抽 hero image.
+
+    优先级: og:image > twitter:image > link image_src. 这些通常是博客作者钦定主图,
+    分辨率有保障 (Next.js / Hugo / Jekyll / WordPress 都默认填). 返回去重后绝对 URL list.
+    """
+    out: List[str] = []
+    seen = set()
+    for tag in soup.find_all("meta"):
+        prop = (tag.get("property") or tag.get("name") or "").lower()
+        if prop in ("og:image", "og:image:secure_url", "twitter:image", "twitter:image:src"):
+            url = (tag.get("content") or "").strip()
+            if url and not url.startswith("data:"):
+                full = urljoin(base_url, url)
+                if full not in seen:
+                    seen.add(full)
+                    out.append(full)
+    for link in soup.find_all("link", rel=lambda r: r and "image_src" in (r if isinstance(r, list) else [r])):
+        url = (link.get("href") or "").strip()
+        if url and not url.startswith("data:"):
+            full = urljoin(base_url, url)
+            if full not in seen:
+                seen.add(full)
+                out.append(full)
+    return out
+
+
 def _parse_int(value: Optional[str]) -> Optional[int]:
     if not value:
         return None
@@ -151,7 +183,21 @@ def _parse_int(value: Optional[str]) -> Optional[int]:
 
 def extract_image_urls(soup: BeautifulSoup, base_url: str,
                        *, max_n: int = DEFAULT_MAX_IMAGES) -> List[str]:
-    """所有 <img>: 按 width*height 排序 (无 attr 退化按 DOM 顺序), 过滤 icon."""
+    """抽 image url: og:image / twitter:image 优先, 然后 inline <img> 按面积排序.
+
+    新增过滤:
+      - URL 黑名单 (avatar / icon / thumb / logo / favicon / sprite)
+      - inline <img> width 必须 >= MIN_INLINE_WIDTH (网页缩略图普遍模糊)
+      - meta image (og/twitter) 不受 width 过滤限制 (作者钦定主图通常无 width attr)
+    """
+    def _is_blacklisted(u: str) -> bool:
+        ul = u.lower()
+        return any(k in ul for k in IMAGE_URL_BLACKLIST)
+
+    # 1) meta image 优先 (作者钦定 hero image)
+    meta_imgs = [u for u in _extract_meta_image_urls(soup, base_url) if not _is_blacklisted(u)]
+
+    # 2) inline <img> 按 width 过滤 + 面积排序
     candidates: List[Tuple[int, int, str]] = []  # (area, dom_order, url)
     for idx, img in enumerate(soup.find_all("img")):
         src = (img.get("src") or "").strip()
@@ -162,24 +208,29 @@ def extract_image_urls(soup: BeautifulSoup, base_url: str,
         if not src or src.startswith("data:"):
             continue
         url = urljoin(base_url, src)
+        if _is_blacklisted(url):
+            continue
         w = _parse_int(img.get("width"))
         h = _parse_int(img.get("height"))
         if w and h and w * h < ICON_MIN_AREA:
             continue  # 小图标
+        # 显式 width < 阈值的过滤 (无 width attr 不过滤, 按 area 0 排到末尾)
+        if w is not None and w < MIN_INLINE_WIDTH:
+            continue
         area = (w or 0) * (h or 0)
         candidates.append((area, idx, url))
-    # 有 area 的优先按 area desc; 无 area 的按 dom_order
     with_area = sorted(
         [c for c in candidates if c[0] > 0], key=lambda c: -c[0]
     )
     without_area = sorted(
         [c for c in candidates if c[0] == 0], key=lambda c: c[1]
     )
-    ordered = [u for _, _, u in (with_area + without_area)]
-    # 去重保序
+    inline_ordered = [u for _, _, u in (with_area + without_area)]
+
+    # 3) 合并去重: meta 在前
     seen = set()
-    out = []
-    for u in ordered:
+    out: List[str] = []
+    for u in (meta_imgs + inline_ordered):
         if u not in seen:
             seen.add(u)
             out.append(u)
@@ -264,6 +315,46 @@ def _download_binary(url: str, dest: Path,
 # Top-level API
 # ---------------------------------------------------------------------------
 
+def _probe_video(path: str) -> Dict:
+    """ffprobe 抽 video metadata: duration / width / height / codec_name.
+
+    失败 (ffprobe 不存在 / 文件损坏 / 非 video) 返回 {} 不抛异常 (caller 自行兜底).
+    """
+    import subprocess
+    try:
+        out = subprocess.run(
+            [
+                "ffprobe", "-v", "error", "-print_format", "json",
+                "-show_streams", "-show_format", path,
+            ],
+            capture_output=True, text=True, timeout=30, check=True,
+        )
+    except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError) as e:
+        logger.warning("ffprobe %s 失败: %s", path, e)
+        return {}
+    try:
+        data = json.loads(out.stdout)
+    except json.JSONDecodeError:
+        return {}
+    streams = data.get("streams") or []
+    fmt = data.get("format") or {}
+    video_stream = next(
+        (s for s in streams if s.get("codec_type") == "video"), None
+    )
+    if not video_stream:
+        return {}
+    try:
+        duration = float(video_stream.get("duration") or fmt.get("duration") or 0.0)
+    except (TypeError, ValueError):
+        duration = 0.0
+    return {
+        "duration": duration,
+        "width": int(video_stream.get("width") or 0),
+        "height": int(video_stream.get("height") or 0),
+        "codec_name": video_stream.get("codec_name") or "",
+    }
+
+
 def fetch_blog_assets(url: str,
                       *, timeout: int = DEFAULT_PAGE_TIMEOUT,
                       _session: Optional[requests.Session] = None) -> Dict:
@@ -346,15 +437,18 @@ def materialize_blog_as_paper_cache(
         if _download_binary(img_url, dest, _session=_session):
             image_paths.append(str(dest))
 
-    # 3. 下载视频 → ./cache/blog_clips/{i}.mp4
+    # 3. 下载视频 → ./cache/blog_clips/{i}.mp4 + ffprobe 拿 metadata
     clip_paths: List[str] = []
+    clip_meta: List[Dict] = []  # [{path, duration, width, height, codec_name}, ...]
     video_urls = (meta.get("video_urls") or [])[:max_videos]
     for i, vid_url in enumerate(video_urls):
         dest = clips_p / f"{i}.mp4"
         if _download_binary(vid_url, dest, _session=_session):
             clip_paths.append(str(dest))
+            probe = _probe_video(str(dest))
+            clip_meta.append({"path": str(dest), **probe})
 
-    # 4. blog_meta.json (debug + arxiv_id 派生)
+    # 4. blog_meta.json (debug + arxiv_id 派生 + clip metadata 供 overlay 模块用)
     arxiv_id_substitute = "blog-" + hashlib.md5(url.encode("utf-8")).hexdigest()[:8]
     meta_record = {
         "url": url,
@@ -365,6 +459,7 @@ def materialize_blog_as_paper_cache(
         "video_urls": video_urls,
         "image_paths": image_paths,
         "clip_paths": clip_paths,
+        "clip_meta": clip_meta,
         "paper_text_path": str(paper_text_path),
         "arxiv_id_substitute": arxiv_id_substitute,
     }

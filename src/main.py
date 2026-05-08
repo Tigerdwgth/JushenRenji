@@ -270,17 +270,41 @@ if __name__ == "__main__":
                         os.makedirs(_proj_cache, exist_ok=True)
                         _cover_path = path.replace(".mp4", ".png")
                         _final_tmp = os.path.join(_proj_cache, os.path.basename(path) + ".cover_prepend.mp4")
+                        # Cover fallback: skip_main_video 模式下 paperagent_workflow 把封面写到
+                        # ./output/daily_summary.png 但不 rename 到主路径 png. 这里按优先级查 fallback
+                        # 源, 复制到主路径让 cover prepend 能正常用真封面 (而非 mp4 第 0 帧黑屏).
+                        if not os.path.exists(_cover_path):
+                            _output_dir = os.path.dirname(path) or "."
+                            _fallbacks = [
+                                os.path.join(_output_dir, "daily_summary.png"),
+                                "./cache/dashscope_cover.png",
+                                "./cache/gemini_cover.png",
+                            ]
+                            for _fb in _fallbacks:
+                                if os.path.exists(_fb):
+                                    try:
+                                        import shutil as _sh_cf
+                                        _sh_cf.copy(_fb, _cover_path)
+                                        logging.info("Cover fallback: %s -> %s", _fb, _cover_path)
+                                        break
+                                    except Exception as _cf_e:
+                                        logging.warning("Cover fallback 复制失败 %s -> %s: %s",
+                                                        _fb, _cover_path, _cf_e)
                         if os.path.exists(_cover_path):
                             # cover.png + 静音 → 2s segment + concat manim_path → final
                             # concat filter 会重编码 (~5-10s 额外耗时), 但保证 codec 一致
                             _cover_seg = os.path.join(_proj_cache, "_cover_seg.mp4")
+                            # 注意: 必须用 `-t 0.04` 统一 video/audio 时长, 不能用 `-frames:v 1`
+                            # + `-shortest` (会让 audio 被截到 0.033s, 短于 AAC 帧长 ~22ms,
+                            # 导致 audio stream 不输出 → concat filter [0:a] 匹配失败).
                             _sp.check_call([
                                 "/usr/bin/ffmpeg", "-v", "warning", "-y",
                                 "-loop", "1", "-framerate", "30", "-i", _cover_path,
-                                "-f", "lavfi", "-t", "0.04", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+                                "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+                                "-t", "0.04",
                                 "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p",
                                 "-c:v", "libx264", "-pix_fmt", "yuv420p",
-                                "-frames:v", "1", "-c:a", "aac", "-shortest", _cover_seg,
+                                "-c:a", "aac", _cover_seg,
                             ])
                             _sp.check_call([
                                 "/usr/bin/ffmpeg", "-v", "warning", "-y",
@@ -297,59 +321,9 @@ if __name__ == "__main__":
                             except Exception:
                                 pass
                             logging.info("Cover prepend (1 frame) + Manim 拼接成功: %s", path)
-                        # blog 模式: 在 path 末尾追加 ./cache/blog_clips/*.mp4 (单 clip ≤30s, 总 ≤90s)
-                        try:
-                            import glob as _gl
-                            _clip_files = sorted(
-                                _gl.glob("./cache/blog_clips/*.mp4"),
-                                key=lambda p: int(__import__("re").findall(r"\d+", os.path.basename(p))[0])
-                                if __import__("re").findall(r"\d+", os.path.basename(p)) else 0,
-                            )
-                            if _clip_files:
-                                _budget_remaining = 90  # 秒
-                                _normalized_clips = []
-                                for _ci, _clip in enumerate(_clip_files):
-                                    if _budget_remaining <= 5:
-                                        break
-                                    _per_clip = min(30, _budget_remaining)
-                                    _norm = os.path.join(_proj_cache, f"_blog_clip_norm_{_ci}.mp4")
-                                    try:
-                                        _sp.check_call([
-                                            "/usr/bin/ffmpeg", "-v", "warning", "-y",
-                                            "-t", str(_per_clip), "-i", _clip,
-                                            "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,"
-                                                   "pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p",
-                                            "-r", "30", "-c:v", "libx264", "-pix_fmt", "yuv420p",
-                                            "-c:a", "aac", "-ar", "44100", "-ac", "2",
-                                            "-shortest", _norm,
-                                        ])
-                                        _normalized_clips.append(_norm)
-                                        _budget_remaining -= _per_clip
-                                    except Exception as _norm_e:
-                                        logging.warning("blog clip 归一化失败 %s: %s", _clip, _norm_e)
-                                if _normalized_clips:
-                                    # concat path + 所有 normalized clips
-                                    _inputs = ["-i", path]
-                                    for _c in _normalized_clips:
-                                        _inputs.extend(["-i", _c])
-                                    _n = 1 + len(_normalized_clips)
-                                    _filter = "".join(f"[{i}:v][{i}:a]" for i in range(_n)) + f"concat=n={_n}:v=1:a=1[v][a]"
-                                    _final2 = os.path.join(_proj_cache, os.path.basename(path) + ".with_blog.mp4")
-                                    _sp.check_call([
-                                        "/usr/bin/ffmpeg", "-v", "warning", "-y",
-                                        *_inputs, "-filter_complex", _filter,
-                                        "-map", "[v]", "-map", "[a]",
-                                        "-c:v", "libx264", "-c:a", "aac", "-pix_fmt", "yuv420p",
-                                        "-movflags", "+faststart", _final2,
-                                    ])
-                                    os.replace(_final2, path)
-                                    for _c in _normalized_clips:
-                                        try: os.remove(_c)
-                                        except Exception: pass
-                                    logging.info("追加 blog clips %d 段, 共 %ds: %s",
-                                                 len(_normalized_clips), 90 - _budget_remaining, path)
-                        except Exception as _blog_append_e:
-                            logging.warning("blog clips append 失败 (主视频不受影响): %s", _blog_append_e)
+                        # NOTE: blog clips 追加已迁移到 manim_engine.compose() 内部,
+                        # 通过 blog_video_overlay.align_video_to_tts 替换 method/results scene.
+                        # 这里不再追加.
                         else:
                             # 无 Gemini 封面: 退化为原 ffmpeg copy + faststart (manim 直出)
                             logging.warning("未找到 Gemini 封面 %s, 跳过 prepend, 直接 copy manim", _cover_path)

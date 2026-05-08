@@ -81,9 +81,11 @@ def test_image_urls_filter_small_icons():
 
 def test_image_urls_sort_by_area():
     urls = extract_image_urls(_soup(), "https://www.genesis.ai/blog/abc")
-    # teaser (1280*720=921600) > method (1024*768=786432)
-    assert urls[0].endswith("teaser.png")
-    assert urls[1].endswith("method.png")
+    # og:image 现在被 prepend, 占首位 (cover.png)
+    # 然后 inline 按面积: teaser (1280*720=921600) > method (1024*768=786432)
+    assert urls[0].endswith("cover.png"), f"og:image 应占首位, 实际 {urls[0]}"
+    assert urls[1].endswith("teaser.png")
+    assert urls[2].endswith("method.png")
 
 
 def test_image_urls_resolves_relative_to_absolute():
@@ -92,7 +94,8 @@ def test_image_urls_resolves_relative_to_absolute():
 
 
 def test_image_urls_max_n_limit():
-    html = "".join(f'<img src="/i{i}.png" width="500" height="500">' for i in range(20))
+    # width 1000 >= MIN_INLINE_WIDTH 才不被过滤
+    html = "".join(f'<img src="/i{i}.png" width="1000" height="1000">' for i in range(20))
     urls = extract_image_urls(BeautifulSoup(html, "html.parser"), "https://e.com", max_n=5)
     assert len(urls) == 5
 
@@ -115,6 +118,78 @@ def test_video_urls_resolves_relative():
     urls = extract_video_urls(_soup(), "https://www.genesis.ai/blog/abc")
     webm = [u for u in urls if "webm" in u]
     assert webm and webm[0].startswith("https://www.genesis.ai/")
+
+
+# ---- og:image / 低分辨率过滤 / URL 黑名单 (新增) ----
+
+def test_image_urls_prefers_og_image():
+    """og:image / twitter:image 必须排首位, 即使 inline <img> 面积更大."""
+    html = """<html><head>
+<meta property="og:image" content="https://e.com/hero.png">
+</head><body>
+<img src="/big.png" width="2000" height="1500">
+</body></html>"""
+    urls = extract_image_urls(BeautifulSoup(html, "html.parser"), "https://e.com")
+    assert urls[0] == "https://e.com/hero.png", f"og:image 应占首位, 实际 {urls[0]}"
+    assert any(u.endswith("big.png") for u in urls), "inline 图也应保留"
+
+
+def test_image_urls_prefers_twitter_image_when_no_og():
+    html = """<html><head>
+<meta name="twitter:image" content="https://e.com/tw.png">
+</head><body><img src="/x.png" width="1200" height="800"></body></html>"""
+    urls = extract_image_urls(BeautifulSoup(html, "html.parser"), "https://e.com")
+    assert urls[0].endswith("tw.png"), f"twitter:image 应占首位, 实际 {urls[0]}"
+
+
+def test_image_urls_filters_low_resolution_inline():
+    """inline <img> width < MIN_INLINE_WIDTH (800) 应被过滤."""
+    html = """<html><body>
+<img src="/big.png" width="1200" height="900">
+<img src="/small.png" width="400" height="300">
+</body></html>"""
+    urls = extract_image_urls(BeautifulSoup(html, "html.parser"), "https://e.com")
+    assert any("big.png" in u for u in urls)
+    assert all("small.png" not in u for u in urls), f"width=400 应过滤, 实际 {urls}"
+
+
+def test_image_urls_no_width_attr_passes():
+    """无 width attr 的 <img> 不应被低分辨率过滤拦截 (按 area=0 排末尾)."""
+    html = """<html><body>
+<img src="/nowh.png">
+<img src="/big.png" width="1500" height="1000">
+</body></html>"""
+    urls = extract_image_urls(BeautifulSoup(html, "html.parser"), "https://e.com")
+    # big.png 按面积排前; nowh.png 按 area=0 排后, 但都在结果里
+    assert any("big.png" in u for u in urls)
+    assert any("nowh.png" in u for u in urls)
+
+
+def test_image_urls_url_blacklist():
+    """URL 含 avatar/icon/thumb/logo/favicon/sprite 应过滤."""
+    html = """<html><head>
+<meta property="og:image" content="https://e.com/avatar.png">
+</head><body>
+<img src="/user_avatar.jpg" width="1200" height="900">
+<img src="/icons/menu.svg" width="1200" height="900">
+<img src="/page-thumb.png" width="1200" height="900">
+<img src="/site-logo.png" width="1200" height="900">
+<img src="/diagram.png" width="1200" height="900">
+</body></html>"""
+    urls = extract_image_urls(BeautifulSoup(html, "html.parser"), "https://e.com")
+    bad_keywords = ("avatar", "icon", "thumb", "logo", "favicon", "sprite")
+    for u in urls:
+        assert not any(k in u.lower() for k in bad_keywords), f"黑名单 {u}"
+    assert any("diagram" in u for u in urls), f"diagram 应保留, 实际 {urls}"
+
+
+def test_image_urls_link_image_src_picked_up():
+    """<link rel='image_src' href=...> 也应作为 hero image 抽出."""
+    html = """<html><head>
+<link rel="image_src" href="https://e.com/featured.png">
+</head><body><img src="/x.png" width="1200" height="900"></body></html>"""
+    urls = extract_image_urls(BeautifulSoup(html, "html.parser"), "https://e.com")
+    assert urls[0].endswith("featured.png"), f"link image_src 应优先, 实际 {urls[0]}"
 
 
 # ---- title / date ----
@@ -218,6 +293,57 @@ def test_materialize_writes_expected_files(tmp_path):
     assert blog_meta["title"] == "Hello"
     assert len(record["image_paths"]) == 2
     assert len(record["clip_paths"]) == 1
+
+
+def test_materialize_writes_clip_meta(tmp_path, monkeypatch):
+    """下载完 clip 后必须调 _probe_video 把 metadata 写到 blog_meta.json."""
+    fake_meta = {
+        "page_url": "https://e.com/x",
+        "title": "X",
+        "description": "d",
+        "body_text": "Body content " * 20,
+        "image_urls": [],
+        "video_urls": ["https://e.com/v0.mp4", "https://e.com/v1.mp4"],
+        "published_date": "2026-05-08",
+    }
+    import src.blog_pipeline as bp
+    orig_dl = bp._download_binary
+    orig_probe = bp._probe_video
+
+    def fake_dl(url, dest, **kw):
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(b"FAKE")
+        return True
+
+    probe_calls = []
+    def fake_probe(path):
+        probe_calls.append(path)
+        return {"duration": 12.34, "width": 1920, "height": 1080, "codec_name": "h264"}
+
+    bp._download_binary = fake_dl
+    bp._probe_video = fake_probe
+    try:
+        materialize_blog_as_paper_cache(
+            "https://e.com/x",
+            cache_dir=str(tmp_path / "cache"),
+            pic_dir=str(tmp_path / "pic"),
+            clips_dir=str(tmp_path / "cache" / "blog_clips"),
+            _fetch_fn=lambda url: fake_meta,
+        )
+    finally:
+        bp._download_binary = orig_dl
+        bp._probe_video = orig_probe
+
+    blog_meta = json.loads((tmp_path / "cache" / "blog_meta.json").read_text())
+    assert "clip_meta" in blog_meta
+    assert len(blog_meta["clip_meta"]) == 2
+    for cm in blog_meta["clip_meta"]:
+        assert cm["duration"] == 12.34
+        assert cm["width"] == 1920
+        assert cm["height"] == 1080
+        assert cm["codec_name"] == "h264"
+        assert cm["path"].endswith(".mp4")
+    assert len(probe_calls) == 2  # 每个 clip 都被 probe
 
 
 def test_materialize_paper_text_includes_title_desc(tmp_path):
