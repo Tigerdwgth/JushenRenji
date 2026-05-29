@@ -320,13 +320,285 @@ def _call_video_plan_skill(text=None, paper_title=None, paper_abstract=None,
             pass
 
 
+# ============================================================
+# 核心公式提取（feature: 自适应 scene + 核心公式讲解）
+# ============================================================
+# kill switch: JSR_DISABLE_FORMULA=1 时一律返回 []，功能默认开启但可一键关。
+# 任何提取/LLM/源码异常都 fallback 到 []，绝不让公式提取炸掉整个 plan。
+
+_FORMULA_MAX = 2  # 最多讲解的核心公式数（硬上限）
+
+
+def _formula_disabled() -> bool:
+    return os.environ.get("JSR_DISABLE_FORMULA", "").strip() in ("1", "true", "True")
+
+
+def _fetch_tex_source(arxiv_id):
+    """尽力拿到解压后展开 \\input 的主 .tex 源码字符串；任何失败返回 None。"""
+    if not arxiv_id:
+        return None
+    aid = str(arxiv_id).strip()
+    if not aid or aid.startswith("blog-"):
+        return None
+    try:
+        import tempfile
+        from src import arxiv_source_analyzer as asa
+        cache_root = CACHE_DIR or tempfile.gettempdir()
+        tarball = asa.fetch_source(aid, cache_root)
+        dst = os.path.join(cache_root, "arxiv_src", asa._strip_version(aid) + "_extract")
+        os.makedirs(dst, exist_ok=True)
+        asa.extract_source(tarball, dst)
+        main_tex = asa.find_main_tex(dst)
+        if not main_tex:
+            return None
+        tex = asa.resolve_includes(main_tex, dst)
+        return tex or None
+    except Exception as e:  # noqa: BLE001
+        logging.warning("[formula] 获取 .tex 源码失败 (arxiv_id=%s): %s", arxiv_id, e)
+        return None
+
+
+def _validate_or_repair_formula(item):
+    """对单条 formula 的 latex 做 validate；不过则 LLM 修一次再 validate；仍不过返回 None。"""
+    from src.latex_utils import validate_latex
+    latex = (item.get("latex") or "").strip()
+    if not latex:
+        return None
+    if validate_latex(latex):
+        return item
+    # 修一次
+    try:
+        repair_prompt = (
+            "你是 LaTeX 专家。下面这段 LaTeX 行间公式体无法通过编译，请只输出修正后的"
+            "公式体（不要 $ 或 equation 环境，不要任何解释、不要 markdown 围栏）。\n\n"
+            + latex
+        )
+        fixed = create_chat_completion(repair_prompt, None, max_tokens=512)
+        if fixed:
+            fixed = fixed.strip()
+            if fixed.startswith("```"):
+                nl = fixed.find("\n")
+                if nl != -1:
+                    fixed = fixed[nl + 1:]
+                if fixed.rstrip().endswith("```"):
+                    fixed = fixed.rstrip()[:-3].rstrip()
+            fixed = fixed.strip().strip("$").strip()
+            if fixed and validate_latex(fixed):
+                item["latex"] = fixed
+                return item
+    except Exception as e:  # noqa: BLE001
+        logging.warning("[formula] 修正公式失败: %s", e)
+    logging.warning("[formula] 公式校验未通过，丢弃: %s", latex[:80])
+    return None
+
+
+def _normalize_formula_items(parsed):
+    """从 LLM 解析结果里取 formulas 列表，规整成 [{latex,narration,highlights}]。"""
+    if isinstance(parsed, dict):
+        items = parsed.get("formulas")
+    elif isinstance(parsed, list):
+        items = parsed
+    else:
+        items = None
+    if not isinstance(items, list):
+        return []
+    out = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        latex = (it.get("latex") or "").strip()
+        narration = (it.get("narration") or "").strip()
+        highlights = it.get("highlights") or []
+        if not isinstance(highlights, list):
+            highlights = []
+        highlights = [str(h).strip() for h in highlights if str(h).strip()]
+        if latex and narration:
+            out.append({"latex": latex, "narration": narration, "highlights": highlights})
+    return out
+
+
+def _extract_core_formulas(text, arxiv_id=None):
+    """提取 0-2 个论文核心公式，每条含 {latex, narration, highlights}。
+
+    策略:
+      1. LaTeX 源码优先: 有 arxiv_id 且能拿到 .tex 时，extract_equations 取候选喂给 LLM 挑选;
+      2. 兜底: 拿不到源码时，让 LLM 从论文正文文本里识别并写出核心公式。
+    每条 latex 都经 validate_latex（不过修一次，仍不过丢弃）。
+    任何异常一律 fallback []，绝不抛。
+    """
+    if _formula_disabled():
+        logging.info("[formula] JSR_DISABLE_FORMULA=1，跳过公式提取")
+        return []
+    try:
+        from src.latex_utils import extract_equations
+    except Exception as e:  # noqa: BLE001
+        logging.warning("[formula] latex_utils 不可用，跳过: %s", e)
+        return []
+
+    try:
+        candidates = []
+        tex = _fetch_tex_source(arxiv_id)
+        if tex:
+            try:
+                candidates = extract_equations(tex, max_n=8) or []
+            except Exception as e:  # noqa: BLE001
+                logging.warning("[formula] extract_equations 失败: %s", e)
+                candidates = []
+
+        if candidates:
+            cand_block = "\n".join(f"[{i}] {c}" for i, c in enumerate(candidates))
+            user_content = (
+                "下面是从论文 LaTeX 源码抽取的行间公式候选（公式体）。"
+                "请从中挑选最多 2 个最能代表论文核心贡献的公式"
+                "（损失函数/目标函数/核心机制公式），跳过纯记号定义、简单恒等式。\n\n"
+                f"候选公式:\n{cand_block}\n\n"
+                "论文摘要/正文片段（辅助判断重要性）:\n" + (text or "")[:4000]
+            )
+        else:
+            user_content = (
+                "下面是论文正文文本。请识别并写出最多 2 个最能代表论文核心贡献的公式"
+                "（损失函数/目标函数/核心机制公式），跳过纯记号定义。\n\n"
+                "论文正文:\n" + (text or "")[:6000]
+            )
+
+        sys_prompt = (
+            "你是论文讲解专家。请输出 JSON 对象，键为 formulas，值为数组（0 到 2 个元素）。"
+            "每个元素含三个字段:\n"
+            '  - "latex": 公式体 LaTeX（不要 $ 符号、不要 equation 环境，仅公式体，'
+            "可被 \\\\frac \\\\sum 等命令书写）;\n"
+            '  - "narration": 这条公式的中文讲解词，完整一段（口语化、可直接当解说）;\n'
+            '  - "highlights": 2-4 条中文要点（字符串数组，每条简短指出公式某一项的含义）。\n'
+            "若论文没有值得单独讲解的核心公式，formulas 返回空数组 []。\n"
+            "严格只输出 JSON 对象，不要 markdown 代码围栏，不要额外文字。"
+        )
+        raw = create_chat_completion(sys_prompt, user_content, max_tokens=2048)
+        parsed = _parse_json_response(raw)
+        items = _normalize_formula_items(parsed)
+
+        formulas = []
+        for it in items[: _FORMULA_MAX]:
+            checked = _validate_or_repair_formula(it)
+            if checked:
+                formulas.append(checked)
+        logging.info("[formula] 提取到 %d 条核心公式（源码=%s）",
+                     len(formulas), bool(tex))
+        return formulas
+    except Exception as e:  # noqa: BLE001
+        logging.warning("[formula] 公式提取整体失败，fallback []: %s", e)
+        return []
+
+
+# ============================================================
+# 示意动画场景提取（feature: opencode 生成 HTML 动画 → 录屏）
+# ============================================================
+# kill switch: JSR_DISABLE_JS_ANIM=1 时一律返回 []，功能默认开启但可一键关。
+# 任何提取/LLM/解析异常都 fallback 到 []，绝不让动画提取炸掉整个 plan。
+
+_ANIM_MAX = 2  # 最多生成示意动画的场景数（硬上限）
+_ANIM_KINDS = ("concrete", "abstract")
+_ANIM_POSITIONS = ("intro_after", "method")
+
+
+def _anim_disabled() -> bool:
+    return os.environ.get("JSR_DISABLE_JS_ANIM", "").strip() in ("1", "true", "True")
+
+
+def _normalize_animation_items(parsed):
+    """从 LLM 解析结果里取 animations 列表，规整成统一结构并做字段校验。
+
+    输出每条: {scene_desc, target_seconds(int 5-9), kind, position, prefer_real_demo(bool)}。
+    非法/缺字段的条目直接跳过。
+    """
+    if isinstance(parsed, dict):
+        items = parsed.get("animations")
+    elif isinstance(parsed, list):
+        items = parsed
+    else:
+        items = None
+    if not isinstance(items, list):
+        return []
+    out = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        scene_desc = (it.get("scene_desc") or "").strip()
+        if not scene_desc:
+            continue
+        # target_seconds 收敛到 [5, 9]，非法值给默认 7。
+        # 先 float 再 round，兼容 LLM 返回的浮点字符串（如 "8.5"）；
+        # None / 非数一律 except 兜底回退 7。
+        try:
+            ts = int(round(float(it.get("target_seconds"))))
+        except (TypeError, ValueError):
+            ts = 7
+        ts = max(5, min(9, ts))
+        kind = (it.get("kind") or "").strip()
+        if kind not in _ANIM_KINDS:
+            kind = "abstract"
+        position = (it.get("position") or "").strip()
+        if position not in _ANIM_POSITIONS:
+            position = "method"
+        prefer_real_demo = bool(it.get("prefer_real_demo"))
+        out.append({
+            "scene_desc": scene_desc,
+            "target_seconds": ts,
+            "kind": kind,
+            "position": position,
+            "prefer_real_demo": prefer_real_demo,
+        })
+    return out
+
+
+def _extract_scene_animations(text, arxiv_id=None):
+    """提取 0-2 个最值得用动画示意的论文场景，每条产出可喂给 opencode 的 spec。
+
+    每条含: {scene_desc, target_seconds, kind, position, prefer_real_demo}。
+    优先论文核心任务/机制: 具身操作任务→concrete(具象物理场景);
+    算法/数据流机制→abstract(抽象机制)。纯记号/无动态内容不选。
+    kill switch: JSR_DISABLE_JS_ANIM=1 → []。任何异常一律 fallback []，绝不抛。
+    """
+    if _anim_disabled():
+        logging.info("[anim] JSR_DISABLE_JS_ANIM=1，跳过示意动画提取")
+        return []
+    try:
+        user_content = (
+            "下面是论文正文文本。请判断其中最值得用一段示意动画来讲解的场景"
+            "（最多 2 个），优先论文最核心的任务或机制:\n"
+            "  - 具身/机器人操作任务等具象物理场景 → kind=concrete;\n"
+            "  - 算法流程/数据流/网络机制等抽象机制 → kind=abstract。\n"
+            "纯记号定义、静态示意、无动态过程的内容不要选。\n\n"
+            "论文正文:\n" + (text or "")[:6000]
+        )
+        sys_prompt = (
+            "你是论文讲解动画导演。请输出 JSON 对象，键为 animations，值为数组（0 到 2 个元素）。"
+            "每个元素含五个字段:\n"
+            '  - "scene_desc": 要可视化的中文场景描述，具体、可画（会喂给 opencode 生成 HTML 动画）;\n'
+            '  - "target_seconds": 整数，建议时长，取 5 到 9 秒;\n'
+            '  - "kind": "concrete"（具象物理场景）或 "abstract"（抽象机制）;\n'
+            '  - "position": "intro_after"（作为引言后的任务示意引子）或 "method"（插在方法段）;\n'
+            '  - "prefer_real_demo": 布尔值，物理拟真度高（布料形变/接触力学/真机操作）时为 true，'
+            "否则 false。\n"
+            "若论文没有适合用动画示意的场景，animations 返回空数组 []。\n"
+            "严格只输出 JSON 对象，不要 markdown 代码围栏，不要额外文字。"
+        )
+        raw = create_chat_completion(sys_prompt, user_content, max_tokens=2048)
+        parsed = _parse_json_response(raw)
+        animations = _normalize_animation_items(parsed)[: _ANIM_MAX]
+        logging.info("[anim] 提取到 %d 个示意动画场景", len(animations))
+        return animations
+    except Exception as e:  # noqa: BLE001
+        logging.warning("[anim] 示意动画提取整体失败，fallback []: %s", e)
+        return []
+
+
 def generate_structured_video_plan(text=None, word_budget: int = 1000, max_attempts: int = 2,
                                      via_skill: bool = False,
                                      paper_title: str = None,
                                      paper_abstract: str = None,
                                      paper_authors: list = None,
                                      target_duration: int = 300,
-                                     language: str = "zh"):
+                                     language: str = "zh",
+                                     arxiv_id: str = None):
     """生成结构化视频脚本（5段式：opening → intro → method → results → conclusion）。
 
     Args:
@@ -363,6 +635,8 @@ def generate_structured_video_plan(text=None, word_budget: int = 1000, max_attem
             )
             if plan:
                 logging.info("[via_skill] video-plan skill succeeded")
+                plan["formulas"] = _extract_core_formulas(text, arxiv_id)
+                plan["animations"] = _extract_scene_animations(text, arxiv_id)
                 return plan
             logging.warning("[via_skill] skill returned empty, fallback to Python path")
         except Exception as e:  # noqa: BLE001
@@ -386,6 +660,8 @@ def generate_structured_video_plan(text=None, word_budget: int = 1000, max_attem
         raw = create_chat_completion(prompt, text, max_tokens=8192)
         plan = _parse_json_response(raw)
         if plan and all(isinstance(plan.get(k), dict) and plan[k].get('script') for k in required):
+            plan["formulas"] = _extract_core_formulas(text, arxiv_id)
+            plan["animations"] = _extract_scene_animations(text, arxiv_id)
             return plan
         logging.warning('结构化脚本生成/解析不完整 (第%d次)，重试', attempt + 1)
     logging.warning('结构化脚本生成失败，回退为普通摘要')

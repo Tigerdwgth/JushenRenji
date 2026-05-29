@@ -183,32 +183,73 @@ def align_video_to_tts(
 
 # ---- scene 分配 ----
 
+def _locate_scene_idx(scene_defs, scene_name: str, section: str):
+    """在 scene_defs 中按真实位置定位某 scene 的 idx.
+
+    优先按 scene_name 精确匹配 (MethodScene / ResultsScene),
+    再退而按 section 匹配该 section 的第一个 scene.
+    找不到返回 None.
+    """
+    for j, sdef in enumerate(scene_defs):
+        if sdef.get("scene_name") == scene_name:
+            return j
+    for j, sdef in enumerate(scene_defs):
+        if sdef.get("section") == section:
+            return j
+    return None
+
+
 def assign_blog_clips_to_scenes(
     clip_metas: List[Dict],
     total_scenes: int = 4,
+    scene_defs: List[Dict] = None,
 ) -> Dict[int, str]:
-    """把 N 个 blog clip 分配到 method (idx=2) 和 results (idx=3) scene.
+    """把 N 个 blog clip 分配到 method 和 results scene.
 
     每 scene 至多 1 clip (简化 xfade 复杂度).
       - 0 clip: {} (manim 正常渲染)
-      - 1 clip: {2: clip0}
-      - 2+ clip: {2: clip0, 3: clip1} (多余 clip logger.info 丢弃)
+      - 1 clip: {method_idx: clip0}
+      - 2+ clip: {method_idx: clip0, results_idx: clip1} (多余 clip logger.info 丢弃)
+
+    scene 真实 idx 的确定:
+      - 传入 scene_defs 时, 按真实位置定位 MethodScene / ResultsScene 的 idx
+        (先按 scene_name, 再按 section), 兼容引言后插入 AnimScene 等导致 idx 漂移的情况;
+      - 未传 scene_defs (旧调用点) 时, 回退到固定 idx 2/3 (旧行为, 保证兼容).
 
     返回 {scene_idx: clip_path}.
     """
     if not clip_metas:
         return {}
+
+    # 确定 method / results 的真实 idx
+    method_idx = METHOD_SCENE_IDX
+    results_idx = RESULTS_SCENE_IDX
+    if scene_defs:
+        m = _locate_scene_idx(scene_defs, "MethodScene", "method")
+        r = _locate_scene_idx(scene_defs, "ResultsScene", "results")
+        if m is not None:
+            method_idx = m
+        else:
+            logger.warning("[blog-overlay] scene_defs 中未找到 MethodScene/method, "
+                           "回退固定 idx %d", METHOD_SCENE_IDX)
+        if r is not None:
+            results_idx = r
+        else:
+            logger.warning("[blog-overlay] scene_defs 中未找到 ResultsScene/results, "
+                           "回退固定 idx %d", RESULTS_SCENE_IDX)
+
     out: Dict[int, str] = {}
     if len(clip_metas) >= 1:
-        out[METHOD_SCENE_IDX] = clip_metas[0]["path"]
+        out[method_idx] = clip_metas[0]["path"]
     if len(clip_metas) >= 2:
-        out[RESULTS_SCENE_IDX] = clip_metas[1]["path"]
+        out[results_idx] = clip_metas[1]["path"]
     if len(clip_metas) > 2:
         logger.info(
             "[blog-overlay] %d clip 超过 method+results 容量, 丢弃 %d 个",
             len(clip_metas), len(clip_metas) - 2,
         )
-    logger.info("[blog-overlay] scene_assignments=%s", out)
+    logger.info("[blog-overlay] scene_assignments=%s (method_idx=%d, results_idx=%d)",
+                out, method_idx, results_idx)
     return out
 
 

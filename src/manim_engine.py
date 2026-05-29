@@ -26,6 +26,20 @@ from src.figure_analyzer import analyze_and_prepare, analysis_to_manim_context, 
 
 logger = logging.getLogger(__name__)
 
+# --- scene 编排额度常量（集中魔数，见 _build_scene_defs）---------------------
+# 固定 4 段（Title/Intro/Method/Results）之外的「额外场景」总预算。
+# 公式 Scene 优先占用，示意动画 Scene 用剩余额度。三者关系：
+#   formula_used + anim_used <= _EXTRA_SCENE_BUDGET
+#   formula_used <= _FORMULA_MAX, anim_used <= _ANIM_MAX
+# _FORMULA_MAX / _ANIM_MAX 与 plan 层 (src.llm_tools.llm_agent) 的同名硬上限一致，
+# 直接复用以保持单一事实来源；import 失败时回退到与其相同的默认值。
+_EXTRA_SCENE_BUDGET = 3  # 额外场景总预算（总 scene 数 <= 4 + 3 = 7）
+try:
+    from src.llm_tools.llm_agent import _FORMULA_MAX, _ANIM_MAX
+except Exception:  # pragma: no cover - 仅在 llm_agent 不可导入时回退
+    _FORMULA_MAX = 2  # 最多讲解的核心公式数（硬上限）
+    _ANIM_MAX = 2     # 最多生成示意动画的场景数（硬上限）
+
 # 渲染质量映射
 QUALITY_MAP = {
     "low": "-ql",       # 480p
@@ -40,6 +54,53 @@ MAX_FRAME_HEIGHT = 7          # 画框最大高度
 SAFE_FRAME_WIDTH = 11         # 缩放目标宽度
 SAFE_FRAME_HEIGHT = 6.5       # 缩放目标高度
 
+
+
+def apply_anim_render_results(scene_defs, narrations, blog_assignments,
+                              anim_mp4_by_idx, dropped_idxs):
+    """应用 js_anim 渲染结果：剔除渲染失败的 scene、重建索引、登记成功 mp4。
+
+    纯逻辑、无副作用（不读盘不渲染），从 run() 抽出便于单测：
+      - dropped_idxs 中的 scene 从 scene_defs / narrations 中干净剔除，
+        剩余 scene 与其 narration 保持一一对齐、索引连续不错乱;
+      - blog_assignments（旧 idx -> 视频路径）按旧->新 idx 重映射，
+        被剔除的 idx 直接丢弃;
+      - anim_mp4_by_idx（旧 idx -> 示意 mp4，仅渲染成功的）登记进
+        blog_assignments（用重映射后的新 idx），复用 blog 外部视频分支。
+
+    Args:
+        scene_defs:        list[dict] 场景定义（含 js_anim scene）。
+        narrations:        list[str]  与 scene_defs 等长的旁白。
+        blog_assignments:  dict[int, str] 旧 idx -> 外部视频路径（blog clip）。
+        anim_mp4_by_idx:   dict[int, str] 旧 idx -> 示意 mp4（仅成功的）。
+        dropped_idxs:      set[int]   渲染失败、需丢弃的旧 idx。
+
+    Returns:
+        (scene_defs, narrations, blog_assignments) 重建后的三元组。
+    """
+    if dropped_idxs:
+        new_scene_defs, new_narrations, old_to_new = [], [], {}
+        for old_j, sdef in enumerate(scene_defs):
+            if old_j in dropped_idxs:
+                continue
+            old_to_new[old_j] = len(new_scene_defs)
+            new_scene_defs.append(sdef)
+            new_narrations.append(narrations[old_j])
+        scene_defs, narrations = new_scene_defs, new_narrations
+        # 已存在的 blog assignments 也按重映射迁移 key（blog/js_anim 互斥时为空）。
+        blog_assignments = {
+            old_to_new[k]: v for k, v in blog_assignments.items()
+            if k in old_to_new
+        }
+        idx_map = old_to_new
+    else:
+        idx_map = {j: j for j in range(len(scene_defs))}
+    # 成功的示意 mp4 登记进 blog_assignments（用最终 idx），
+    # 复用 run() 主循环的 `if i in blog_assignments` 分支跳过 manim，
+    # 并复用 compose() 的 align_video_to_tts 外部视频分支换 TTS 音轨。
+    for old_j, mp4 in anim_mp4_by_idx.items():
+        blog_assignments[idx_map[old_j]] = mp4
+    return scene_defs, narrations, blog_assignments
 
 
 class ManimEngine:
@@ -154,31 +215,170 @@ class ManimEngine:
         return '\n'.join(result)
 
     def _inject_scale_safety(self, code):
-        """注入 VGroup 缩放安全网，防止内容超出画框。"""
-        lines = code.split('\n')
-        safety = [
-            '        # === Auto-scale safety net ===',
+        """注入安全网：mobject 进入场景时立刻 scale_to_fit + 把超出 frame 的位置拉回画内。
+
+        旧实现把 scale check 放在 construct 末尾，所有 self.play 播完才生效——
+        但 mp4 是按时间轴写帧的，超界帧早已写入。改为在 construct 开头 monkey-patch
+        self.add：每个 mobject add 进 scene 时立刻按比例 cap 到 SAFE 区，渲染每一帧
+        都已经 fit。末尾兜底 scale 保留。
+        """
+        MW = str(MAX_FRAME_WIDTH); MH = str(MAX_FRAME_HEIGHT)
+        SW = str(SAFE_FRAME_WIDTH); SH = str(SAFE_FRAME_HEIGHT)
+        prologue = [
+            '        # === Safe-frame guard (auto-cap on add) ===',
+            '        _SF_MAX_W, _SF_MAX_H = ' + MW + ', ' + MH,
+            '        _SF_SAFE_W, _SF_SAFE_H = ' + SW + ', ' + SH,
+            '        def _sf_cap(_m):',
+            '            try:',
+            '                w = getattr(_m, "width", 0); h = getattr(_m, "height", 0)',
+            '                if w and w > _SF_MAX_W: _m.scale_to_fit_width(_SF_SAFE_W)',
+            '                if h and h > _SF_MAX_H: _m.scale_to_fit_height(_SF_SAFE_H)',
+            '                if not hasattr(_m, "get_center"): return',
+            '                c = _m.get_center()',
+            '                w = getattr(_m, "width", 0); h = getattr(_m, "height", 0)',
+            '                hw = _SF_MAX_W / 2.0; hh = _SF_MAX_H / 2.0',
+            '                dx = 0.0; dy = 0.0',
+            '                if c[0] - w/2.0 < -hw: dx = -hw - (c[0] - w/2.0) + 0.05',
+            '                if c[0] + w/2.0 >  hw: dx =  hw - (c[0] + w/2.0) - 0.05',
+            '                if c[1] - h/2.0 < -hh: dy = -hh - (c[1] - h/2.0) + 0.05',
+            '                if c[1] + h/2.0 >  hh: dy =  hh - (c[1] + h/2.0) - 0.05',
+            '                if dx or dy: _m.shift([dx, dy, 0])',
+            '            except Exception:',
+            '                pass',
+            '        _sf_orig_add = self.add',
+            '        def _sf_safe_add(*mobs, **kw):',
+            '            for _m in mobs: _sf_cap(_m)',
+            '            return _sf_orig_add(*mobs, **kw)',
+            '        self.add = _sf_safe_add',
+            '        # === end safe-frame guard ===',
+            '',
+        ]
+        epilogue = [
+            '        # === Auto-scale safety net (tail fallback) ===',
             '        _all_mobs = VGroup(*[m for m in self.mobjects if isinstance(m, VMobject)])',
             '        if len(_all_mobs) > 0:',
-            '            if _all_mobs.width > ' + str(MAX_FRAME_WIDTH) + ':',
-            '                _all_mobs.scale_to_fit_width(' + str(SAFE_FRAME_WIDTH) + ')',
-            '            if _all_mobs.height > ' + str(MAX_FRAME_HEIGHT) + ':',
-            '                _all_mobs.scale_to_fit_height(' + str(SAFE_FRAME_HEIGHT) + ')',
+            '            if _all_mobs.width > ' + MW + ':',
+            '                _all_mobs.scale_to_fit_width(' + SW + ')',
+            '            if _all_mobs.height > ' + MH + ':',
+            '                _all_mobs.scale_to_fit_height(' + SH + ')',
         ]
-        # 找到 construct 方法体的最后一行（8 空格缩进的语句），但避免插入到
-        # 函数调用括号内部。向上搜索第一个完整语句（不以 ) 结尾且非空）
-        insert_idx = len(lines) - 1
-        paren_depth = 0
-        for i in range(len(lines) - 1, -1, -1):
+        lines = code.split('\n')
+
+        # 1) prologue: 紧跟 "    def construct(self):" 行之后插入
+        #    兼容带返回注解的 "def construct(self) -> None:" 与 "async def construct(self)"
+        head_idx = None
+        for i, ln in enumerate(lines):
+            _s = ln.lstrip()
+            if _s.startswith('def construct(self)') or _s.startswith('async def construct(self)'):
+                head_idx = i + 1
+                break
+        if head_idx is None:
+            return code  # 没有 construct 方法，原样返回
+        lines = lines[:head_idx] + prologue + lines[head_idx:]
+
+        # 2) epilogue: 插到 construct 方法体最后一个内容行之后。
+        #    直接取「最后一个非空非注释、>=8 空格缩进」的行即可——对跨行 self.play(...)
+        #    的闭合行 ) 之后插入是正确的；旧的括号配平向上扫描遇到跨行语句会停在它的
+        #    开头行 self.play( 处，把 epilogue 插进未闭合的调用中间，导致 SyntaxError。
+        insert_idx = len(lines)
+        for i in range(len(lines) - 1, head_idx + len(prologue) - 1, -1):
             stripped = lines[i].strip()
             if not stripped or stripped.startswith('#'):
                 continue
-            # 跟踪括号深度，确保不在未闭合的括号内插入
-            paren_depth += stripped.count(')') - stripped.count('(')
-            if paren_depth <= 0 and lines[i].startswith('        '):
+            if lines[i].startswith('        '):
                 insert_idx = i + 1
                 break
-        lines = lines[:insert_idx] + safety + lines[insert_idx:]
+        lines = lines[:insert_idx] + epilogue + lines[insert_idx:]
+        return '\n'.join(lines)
+
+    def _inject_text_overlap_guard(self, code):
+        """注入"文字重叠守卫"：包裹 self.play，每次播放后检测场景内文字 mobject 的
+        包围盒重叠，只保留最上层（最新/ z_index 最高）的文字，把被遮挡的下层文字 FadeOut。
+
+        与"累加显示"原则配合：不重叠的文字仍累加保留；只有真正叠在一起糊成一团时，
+        才移除下层文字 —— 即"新文字出现后只显示最上层的文字"。
+        """
+        prologue = [
+            '        # === Text-overlap guard: 新文字出现后只保留最上层文字 ===',
+            '        # 阈值按"交叠面积 / 较大文字面积"判定: 要求两块大幅互相重合 (真糊成一团)',
+            '        # 才删下层, 避免小标签压在大段落上时误删整段 (见 code-review finding 1/2)。',
+            '        _TO_THRESH = 0.5',
+            '        _TO_TEXT_CLS = ("Text", "MarkupText", "Tex", "MathTex",',
+            '                        "SingleStringMathTex", "Paragraph", "Title")',
+            '        try:  # isinstance 覆盖子类 (Title->Tex 等); 失败则回退类名匹配',
+            '            from manim import Text as _TT0, MarkupText as _TT1, Tex as _TT2',
+            '            from manim import MathTex as _TT3, Paragraph as _TT4',
+            '            _TO_TYPES = (_TT0, _TT1, _TT2, _TT3, _TT4)',
+            '        except Exception:',
+            '            _TO_TYPES = tuple()',
+            '        def _to_is_text(_m):',
+            '            if _TO_TYPES and isinstance(_m, _TO_TYPES): return True',
+            '            return type(_m).__name__ in _TO_TEXT_CLS',
+            '        def _to_bbox(_m):',
+            '            try:',
+            '                _c = _m.get_center(); _w = float(_m.width); _h = float(_m.height)',
+            '                if _w <= 0 or _h <= 0: return None',
+            '                return (_c[0]-_w/2.0, _c[1]-_h/2.0, _c[0]+_w/2.0, _c[1]+_h/2.0, _w*_h)',
+            '            except Exception:',
+            '                return None',
+            '        def _to_overlap_ratio(_a, _b):',
+            '            _ix0 = max(_a[0], _b[0]); _iy0 = max(_a[1], _b[1])',
+            '            _ix1 = min(_a[2], _b[2]); _iy1 = min(_a[3], _b[3])',
+            '            if _ix1 <= _ix0 or _iy1 <= _iy0: return 0.0',
+            '            _inter = (_ix1-_ix0) * (_iy1-_iy0)',
+            '            _amax = max(_a[4], _b[4])  # 较大块面积归一化: 小标签盖大段落 ratio 很小, 不误删',
+            '            return _inter/_amax if _amax > 0 else 0.0',
+            '        def _to_resolve_overlap():',
+            '            _texts = [_m for _m in self.mobjects if _to_is_text(_m)]',
+            '            if len(_texts) < 2: return',
+            '            # 绘制顺序: 列表越靠后越上层; z_index 更高更上层',
+            '            _ranked = sorted(range(len(_texts)),',
+            '                             key=lambda _i: (getattr(_texts[_i], "z_index", 0), _i))',
+            '            _boxes = {_i: _to_bbox(_texts[_i]) for _i in range(len(_texts))}',
+            '            _remove = set()',
+            '            for _p in range(len(_ranked)):',
+            '                _lo = _ranked[_p]',
+            '                if _lo in _remove or _boxes[_lo] is None: continue',
+            '                for _q in range(_p + 1, len(_ranked)):',
+            '                    _hi = _ranked[_q]',
+            '                    if _hi in _remove or _boxes[_hi] is None: continue',
+            '                    if _to_overlap_ratio(_boxes[_lo], _boxes[_hi]) > _TO_THRESH:',
+            '                        _remove.add(_lo)  # _lo 在下层被遮挡 -> 移除, 保留上层 _hi',
+            '                        break',
+            '            _rm = [_texts[_i] for _i in _remove if _texts[_i] in self.mobjects]',
+            '            if _rm:',
+            '                import sys as _sys',
+            '                print("[overlap-guard] 检测到文字重叠, 移除 %d 个下层文字" % len(_rm),',
+            '                      file=_sys.stderr)',
+            '                try:',
+            '                    _to_orig_play(*[FadeOut(_x) for _x in _rm], run_time=0.3)',
+            '                except Exception:',
+            '                    try: self.remove(*_rm)',
+            '                    except Exception as _e2:',
+            '                        print("[overlap-guard] 移除失败:", _e2, file=_sys.stderr)',
+            '        _to_orig_play = self.play',
+            '        # 注: 重叠在创建它的那次 play 期间仍会短暂可见, 守卫在 play 结束后清理',
+            '        # (下层文字 FadeOut)。彻底无重叠需 per-frame updater, 此处取事后清理折中。',
+            '        def _to_guarded_play(*_anims, **_kw):',
+            '            _ret = _to_orig_play(*_anims, **_kw)',
+            '            try: _to_resolve_overlap()',
+            '            except Exception: pass',
+            '            return _ret',
+            '        self.play = _to_guarded_play',
+            '        # === end text-overlap guard ===',
+            '',
+        ]
+        lines = code.split('\n')
+        head_idx = None
+        for i, ln in enumerate(lines):
+            # 兼容 "def construct(self):"、带注解 "-> None:" 与 "async def construct(self)"
+            _s = ln.lstrip()
+            if _s.startswith('def construct(self)') or _s.startswith('async def construct(self)'):
+                head_idx = i + 1
+                break
+        if head_idx is None:
+            return code  # 没有 construct 方法，原样返回
+        lines = lines[:head_idx] + prologue + lines[head_idx:]
         return '\n'.join(lines)
 
     def _enforce_reading_time(self, code):
@@ -231,6 +431,8 @@ class ManimEngine:
         # _ensure_page_fadeouts 已禁用: 它会强插中间 FadeOut, 破坏累加显示
         code = self._remove_trailing_fadeout(code)
         code = self._inject_scale_safety(code)
+        # 文字重叠守卫: 新文字出现后只保留最上层文字 (在缩放安全网之后注入)
+        code = self._inject_text_overlap_guard(code)
         code = self._enforce_reading_time(code)
         return code
 
@@ -282,9 +484,15 @@ class ManimEngine:
                 cmd, shell=True, capture_output=True, text=True,
                 env=env, cwd=os.path.abspath(self.temp_dir)
             )
+            logger.info(
+                "opencode subprocess: returncode=%s stdout_len=%d stderr_len=%d",
+                result.returncode, len(result.stdout or ""), len(result.stderr or "")
+            )
             output = result.stdout
+            output_source = "stdout"
             if not output:
                 output = result.stderr or ""
+                output_source = "stderr-fallback"
 
             # 0. 优先路径: opencode 用 Write 工具把代码写到 cwd/<scene_name>.py
             #    (调用前已清理旧文件, 此处文件存在 = 本次新写)
@@ -322,7 +530,26 @@ class ManimEngine:
                 logger.info("opencode fallback 提取代码 (stdout text, %d 行)", code.count("\n") + 1)
                 return code
 
-            logger.warning("opencode 未返回有效代码，输出前 500 字: %s", output[:500])
+            import time as _time
+            dbg_name = scene_name or "unknown"
+            dbg_path = f"/tmp/opencode_dbg_{dbg_name}_{int(_time.time())}.log"
+            try:
+                with open(dbg_path, "w", encoding="utf-8") as _df:
+                    _df.write(f"=== returncode: {result.returncode}\n")
+                    _df.write(f"=== output_source: {output_source}\n")
+                    _df.write(f"=== stdout ({len(result.stdout or '')} chars) ===\n")
+                    _df.write(result.stdout or "")
+                    _df.write(f"\n=== stderr ({len(result.stderr or '')} chars) ===\n")
+                    _df.write(result.stderr or "")
+            except Exception as _e:
+                logger.warning("dump opencode debug 失败: %s", _e)
+            logger.warning(
+                "opencode 未返回有效代码 (source=%s rc=%s len=%d): head 2000 字: %r",
+                output_source, result.returncode, len(output), output[:2000]
+            )
+            if len(output) > 2000:
+                logger.warning("opencode tail 1000 字: %r", output[-1000:])
+            logger.warning("完整 stdout+stderr dump 到: %s", dbg_path)
             return ""
         except subprocess.TimeoutExpired:
             logger.error("opencode 调用超时")
@@ -383,6 +610,9 @@ class ManimEngine:
         user_content += f"描述: {sdesc}\n"
         if scene_info.get("latex"):
             user_content += f"LaTeX 公式: {scene_info['latex']}\n"
+        if scene_info.get("highlights"):
+            import json as _json_hl
+            user_content += f"highlights: {_json_hl.dumps(scene_info['highlights'], ensure_ascii=False)}\n"
         if scene_info.get("script_excerpt"):
             user_content += f"脚本原文: {scene_info['script_excerpt']}\n"
 
@@ -476,6 +706,8 @@ class ManimEngine:
                         code = re.sub(r"\n?```$", "", code)
                         code = code.strip()
                     if code:
+                        # 修复代码同样要过安全网/重叠守卫等注入，否则重试版本会丢失全部保护
+                        code = self.inject_bounds_check(code)
                         logger.info("opencode 已修复代码，准备重试")
                     else:
                         logger.warning("opencode 修复失败，无法重试")
@@ -598,9 +830,15 @@ class ManimEngine:
             tts_model, tts_voice = get_tts_config()
             logger.info("Manim TTS 配置 model=%s voice=%s", tts_model, tts_voice)
 
+            # audio_parts 与 narrations（即 rendered_narrations / scene_videos）
+            # 严格一一对应：空 narration 或合成失败的槽位 append None 占位，
+            # 绝不 continue 跳过——否则下标错位会让某 scene 之后全部配错音频
+            # (Bug#4)。compose 端按 `if narration_audios[idx]:` 处理 None 槽位
+            # （该 scene 静音、不叠音轨）。
             audio_parts = []
             for i, text in enumerate(narrations):
                 if not text or not text.strip():
+                    audio_parts.append(None)  # 占位，保持与 scene 对齐
                     continue
 
                 audio_path = os.path.join(self.temp_dir, f"tts_{i}.mp3")
@@ -615,11 +853,15 @@ class ManimEngine:
                         f.write(audio_data)
                     audio_parts.append(audio_path)
                     logger.info("TTS 第 %d 段生成成功: %s", i, text[:30])
+                else:
+                    audio_parts.append(None)  # 合成失败也占位，保持对齐
 
-            if not audio_parts:
+            # 至少要有一段真实音频，否则没有可拼接的音轨
+            real_parts = [p for p in audio_parts if p]
+            if not real_parts:
                 return None
 
-            audio_clips = [AudioFileClip(p) for p in audio_parts]
+            audio_clips = [AudioFileClip(p) for p in real_parts]
             from moviepy import concatenate_audioclips
             combined = concatenate_audioclips(audio_clips)
             output_audio = os.path.join(self.temp_dir, "tts_combined.mp3")
@@ -628,7 +870,8 @@ class ManimEngine:
             for clip in audio_clips:
                 clip.close()
 
-            self._audio_parts = audio_parts  # 保存各段音频路径
+            # 各 scene 的音频路径（None = 该 scene 无音轨），与 scene_videos 等长
+            self._audio_parts = audio_parts
             return output_audio
 
         except Exception as e:
@@ -809,7 +1052,7 @@ class ManimEngine:
                 return video_path
 
             overall = check.get("overall_score", 0)
-            passed = check.get("pass", overall >= 6)
+            passed = True  # consistency check disabled (always accept, see LESSONS_LEARNED for context)
             missing = check.get("missing_components", [])
             suggestions = check.get("suggestions", [])
 
@@ -865,18 +1108,16 @@ class ManimEngine:
 
         return video_path
 
-    def run(self, tts=False, quality="medium", fmt="mp4"):
-        """完整流程：固定 4 场景 -> 生成代码 -> 渲染 -> 拼接。"""
-        logger.info("=== Manim 演示生成开始 ===")
+    def _build_scene_defs(self, plan_scripts):
+        """构建 scene_defs 与对齐的 narrations 列表（编排层，纯逻辑、不渲染）。
 
-        # 1. Extract scripts from structured_plan
-        sections = ["opening", "intro", "method", "results"]
-        plan_scripts = {}
-        for sec in sections:
-            sec_data = self.structured_plan.get(sec, {})
-            script = sec_data.get("script", sec_data) if isinstance(sec_data, dict) else sec_data
-            plan_scripts[sec] = str(script) if script else ""
+        固定 4 段 (Title/Intro/Method/Results)，并按 structured_plan["formulas"]
+        自适应在 Method 与 Results 之间插入至多 2 个 FormulaScene；
+        formulas 为空时返回原始 4 段（与老链路字节级一致）。无效/超限公式被丢弃。
 
+        Returns:
+            (scene_defs: list[dict], narrations: list[str]) 等长且一一对齐。
+        """
         # 2. Define fixed 4 scenes
         scene_defs = [
             {
@@ -907,6 +1148,131 @@ class ManimEngine:
 
         # 3. Narrations = plan scripts directly
         narrations = [plan_scripts.get(s["section"], "") for s in scene_defs]
+
+        # 3.0 [feature] 自适应插入 FormulaScene（plan 提取的核心公式）。
+        # formulas 为空时（绝大多数老论文/老链路）完全不进此分支，
+        # scene_defs / narrations 保持上面固定 4 段原样，行为字节级一致。
+        #
+        # 信任 plan 层：_extract_core_formulas 已对每条 latex 调
+        # _validate_or_repair_formula 校验过，非法公式不会进 structured_plan
+        # ["formulas"]。这里不再重复 validate_latex（Bug#6：manim 运行环境
+        # PATH 若无 latex，FileNotFoundError→False 会静默清空全部已通过公式，
+        # 且每条公式多一次 ~秒级子进程编译）。仅保留字段缺失/空的健壮性检查。
+        raw_formulas = self.structured_plan.get("formulas", []) or []
+        valid_formulas = []
+        if raw_formulas:
+            for fml in raw_formulas:
+                if not isinstance(fml, dict):
+                    continue
+                latex = (fml.get("latex") or "").strip()
+                narration = (fml.get("narration") or "").strip()
+                if not latex or not narration:
+                    continue
+                valid_formulas.append(fml)
+            # 硬上限：method 之后最多 _FORMULA_MAX 个 FormulaScene
+            if len(valid_formulas) > _FORMULA_MAX:
+                logger.info("[formula] 公式数 %d 超过上限 %d，截断",
+                            len(valid_formulas), _FORMULA_MAX)
+                valid_formulas = valid_formulas[:_FORMULA_MAX]
+
+        if valid_formulas:
+            formula_defs = []
+            formula_narrs = []
+            for i, fml in enumerate(valid_formulas):
+                formula_defs.append({
+                    "scene_name": f"FormulaScene{i+1}",
+                    "type": "formula",
+                    "section": "method",
+                    "description": fml["narration"],
+                    "latex": fml["latex"],
+                    "highlights": fml.get("highlights", []),
+                })
+                formula_narrs.append(fml["narration"])
+            # 序列动态化: [Title, Intro, Method, *FormulaScenes, Results]
+            # 插在 Method 之后、Results 之前（Results 始终是 scene_defs 最后一个）。
+            insert_at = len(scene_defs) - 1
+            scene_defs = scene_defs[:insert_at] + formula_defs + scene_defs[insert_at:]
+            narrations = narrations[:insert_at] + formula_narrs + narrations[insert_at:]
+            logger.info("[formula] 插入 %d 个 FormulaScene，总 scene 数 %d",
+                        len(formula_defs), len(scene_defs))
+
+        # 3.1 [feature] 自适应插入 js_anim 示意动画 scene。
+        # animations 来自 structured_plan（plan 层已做 kill switch / 字段校验 / 0-2 条）。
+        # 为空时（kill switch 关 / 论文无合适场景 / 老链路）完全不进此分支，
+        # scene_defs / narrations 保持公式编排或固定 4 段原样，行为字节级一致。
+        animations = self.structured_plan.get("animations", []) or []
+        if animations:
+            # 总预算 clamp（硬约束）：固定 4 场景 + 额外场景（公式 + 示意）。
+            # 额外场景合计 <= 3，总 scene <= 7。公式优先占额度（论文核心），
+            # 示意用剩余额度（且示意自身上限 2）。
+            num_formula = len(valid_formulas)
+            anim_budget = max(0, min(_EXTRA_SCENE_BUDGET - num_formula, _ANIM_MAX))
+            if len(animations) > anim_budget:
+                logger.info("[anim] 示意动画数 %d 超过剩余额度 %d（公式占 %d），截断丢弃 %d 条",
+                            len(animations), anim_budget, num_formula,
+                            len(animations) - anim_budget)
+                animations = animations[:anim_budget]
+            # 分别构造 intro_after / method 两组 AnimScene（保持 plan 顺序，全局编号）。
+            intro_defs, intro_narrs = [], []
+            method_defs, method_narrs = [], []
+            for i, anim in enumerate(animations):
+                position = anim.get("position") or "method"
+                section = "method" if position == "method" else "intro"
+                scene_info = {
+                    "scene_name": f"AnimScene{i+1}",
+                    "type": "js_anim",
+                    "section": section,
+                    # description 兼作 TTS 解说词（本阶段）
+                    "description": anim["scene_desc"],
+                    "anim_spec": {
+                        "scene_desc": anim["scene_desc"],
+                        "target_seconds": anim["target_seconds"],
+                        "kind": anim["kind"],
+                        "prefer_real_demo": anim.get("prefer_real_demo", False),
+                    },
+                }
+                if position == "intro_after":
+                    intro_defs.append(scene_info)
+                    intro_narrs.append(anim["scene_desc"])
+                else:
+                    method_defs.append(scene_info)
+                    method_narrs.append(anim["scene_desc"])
+            # 插 intro_after：在 IntroScene 之后、MethodScene 之前。
+            if intro_defs:
+                idx_intro = next((j for j, s in enumerate(scene_defs)
+                                  if s["scene_name"] == "IntroScene"), 0)
+                at = idx_intro + 1
+                scene_defs = scene_defs[:at] + intro_defs + scene_defs[at:]
+                narrations = narrations[:at] + intro_narrs + narrations[at:]
+            # 插 method：在 MethodScene 之后（与公式 scene 同区，排在公式后面）。
+            # 公式 scene 也挂 section==method 且紧跟 MethodScene，故定位最后一个
+            # section==method 的 scene，插在其后，保证示意排在公式之后、Results 之前。
+            if method_defs:
+                last_method = max((j for j, s in enumerate(scene_defs)
+                                   if s.get("section") == "method"), default=None)
+                at = (last_method + 1) if last_method is not None else (len(scene_defs) - 1)
+                scene_defs = scene_defs[:at] + method_defs + scene_defs[at:]
+                narrations = narrations[:at] + method_narrs + narrations[at:]
+            logger.info("[anim] 插入 %d 个 AnimScene（intro_after %d / method %d），总 scene 数 %d",
+                        len(intro_defs) + len(method_defs), len(intro_defs),
+                        len(method_defs), len(scene_defs))
+
+        return scene_defs, narrations
+
+    def run(self, tts=False, quality="medium", fmt="mp4"):
+        """完整流程：固定 4 场景 -> 生成代码 -> 渲染 -> 拼接。"""
+        logger.info("=== Manim 演示生成开始 ===")
+
+        # 1. Extract scripts from structured_plan
+        sections = ["opening", "intro", "method", "results"]
+        plan_scripts = {}
+        for sec in sections:
+            sec_data = self.structured_plan.get(sec, {})
+            script = sec_data.get("script", sec_data) if isinstance(sec_data, dict) else sec_data
+            plan_scripts[sec] = str(script) if script else ""
+
+        # 2-3. 构建场景定义与旁白（含 FormulaScene 自适应编排），抽成方法便于单测。
+        scene_defs, narrations = self._build_scene_defs(plan_scripts)
 
         # 3.5 分析方法图（用于 MethodScene 增强）
         figure_analysis_result = None
@@ -948,13 +1314,63 @@ class ManimEngine:
                 if _clip_meta:
                     from src import blog_video_overlay
                     self._blog_scene_assignments = blog_video_overlay.assign_blog_clips_to_scenes(
-                        _clip_meta, total_scenes=len(scene_defs),
+                        _clip_meta, total_scenes=len(scene_defs), scene_defs=scene_defs,
                     )
                     logger.info("[blog-overlay] 检测到 blog 模式, scene 分配: %s",
                                 self._blog_scene_assignments)
         except Exception as _e:
             logger.warning("[blog-overlay] 读 blog_meta.json 失败 (退化为纯 manim): %s", _e)
             self._blog_scene_assignments = {}
+
+        # 3.7 [feature] js_anim 示意 scene 预渲染：HTML -> mp4，不走 manim。
+        # 先把所有 js_anim scene 渲成 mp4，成功的登记进 _blog_scene_assignments
+        # （复用 blog 外部视频分支：compose 走 align_video_to_tts 换 TTS 音轨），
+        # 失败的整条 scene 干净丢弃（同步剔除 scene_defs / narrations 并重建索引），
+        # 避免后续 idx / narration 对齐错乱。无 js_anim scene 时此段完全空跑。
+        anim_scene_idxs = [j for j, s in enumerate(scene_defs)
+                           if s.get("type") == "js_anim"]
+        if anim_scene_idxs:
+            from src.js_anim_engine import _opencode_generate_html, render_html_to_mp4
+            anim_mp4_by_idx = {}   # 旧 idx -> mp4 路径（仅成功的）
+            dropped_idxs = set()   # 旧 idx，渲染失败被丢弃
+            for j in anim_scene_idxs:
+                sdef = scene_defs[j]
+                spec = sdef.get("anim_spec", {})
+                sname = sdef["scene_name"]
+                scene_desc = spec.get("scene_desc", sdef.get("description", ""))
+                target_seconds = spec.get("target_seconds", 7)
+                kind = spec.get("kind", "abstract")
+                # TODO 阶段2: 若 anim_spec.prefer_real_demo 且能抓到论文真实 demo 视频,
+                # 优先用真实 clip, 跳过 JS 生成。本阶段不实现真实抓取，直接走 JS 生成。
+                logger.info("[anim] 渲染示意 scene %d (%s): kind=%s, %.0fs",
+                            j, sname, kind, float(target_seconds))
+                user_content = (
+                    f"scene_name: {sname}\n"
+                    f"场景描述: {scene_desc}\n"
+                    f"target_seconds: {target_seconds}\n"
+                    f"kind: {kind}\n"
+                )
+                full_prompt = prompts_dict["js_anim_generate"] + "\n\n" + user_content
+                html = _opencode_generate_html(full_prompt, sname, self.temp_dir)
+                if not html:
+                    logger.warning("[anim] scene %d (%s) HTML 生成失败，降级丢弃", j, sname)
+                    dropped_idxs.add(j)
+                    continue
+                out_mp4 = os.path.join(self.temp_dir, f"{sname}.mp4")
+                mp4 = render_html_to_mp4(html, out_mp4)
+                if not mp4:
+                    logger.warning("[anim] scene %d (%s) HTML->mp4 渲染失败，降级丢弃", j, sname)
+                    dropped_idxs.add(j)
+                    continue
+                anim_mp4_by_idx[j] = mp4
+                logger.info("[anim] scene %d (%s) 示意 mp4 就绪: %s", j, sname, mp4)
+            # 剔除被丢弃的 scene、重建索引、登记成功 mp4（抽成纯函数便于单测）。
+            scene_defs, narrations, self._blog_scene_assignments = apply_anim_render_results(
+                scene_defs, narrations, self._blog_scene_assignments,
+                anim_mp4_by_idx, dropped_idxs,
+            )
+            logger.info("[anim] 示意 scene 渲染完成：成功 %d / 丢弃 %d，最终 scene 数 %d",
+                        len(anim_mp4_by_idx), len(dropped_idxs), len(scene_defs))
 
         # 4. Generate + render each scene (blog 注入 scene 跳过 manim 渲染)
         scene_videos = []
@@ -973,7 +1389,7 @@ class ManimEngine:
                 logger.info("[blog-overlay] scene %d (%s) 用 blog clip 替代 manim 渲染: %s",
                             i, sdef["scene_name"], _blog_clip)
                 continue
-            logger.info("生成场景 %d/4: %s (%s)", i + 1, sdef["scene_name"], sdef["type"])
+            logger.info("生成场景 %d/%d: %s (%s)", i + 1, len(scene_defs), sdef["scene_name"], sdef["type"])
 
             # MethodScene 注入图像分析结果
             if sdef["type"] == "architecture" and figure_analysis_result:

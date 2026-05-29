@@ -242,7 +242,8 @@ if __name__ == "__main__":
                 if os.path.exists(cached_pdf):
                     proc = PDFProcessor(cached_pdf)
                     paper_text = proc.extract_text()
-                    structured_plan = generate_structured_video_plan(paper_text)
+                    _fb_aid = locals().get("arxiv_id") or None
+                    structured_plan = generate_structured_video_plan(paper_text, arxiv_id=_fb_aid)
 
             if structured_plan and paper_text:
                 _manim_aid = locals().get("arxiv_id") or None

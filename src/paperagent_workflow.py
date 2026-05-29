@@ -211,6 +211,18 @@ def get_videoclips(paper_text: str = "", demo_url: str = "", download_folder: st
 
     return videos
 
+def _derive_arxiv_id_for_plan(paper_link):
+    """从论文链接解析 arxiv_id, 供公式源码优先路径用; 失败/blog 等返回 None 走 LLM 兜底。"""
+    if not paper_link:
+        return None
+    try:
+        from env_setup import parse_arxiv_link as _pal
+        aid = _pal(paper_link)
+        return aid or None
+    except Exception:
+        return None
+
+
 def run_pdf_to_video_pipeline(paper=None,pdf_file_path=None,demowebsite=None,en_title="",prefix="",target_duration=300):
     logging.info("开始程序")
     _clean_pipeline_cache()
@@ -308,7 +320,8 @@ def run_pdf_to_video_pipeline(paper=None,pdf_file_path=None,demowebsite=None,en_
     logging.info("生成结构化视频脚本")
     structured_plan = {}
     try:
-        structured_plan = generate_structured_video_plan(text, word_budget=word_budget['summary'])
+        _plan_aid = _derive_arxiv_id_for_plan(getattr(paper, 'link', None) if paper else None)
+        structured_plan = generate_structured_video_plan(text, word_budget=word_budget['summary'], arxiv_id=_plan_aid)
         if structured_plan:
             summary = structured_plan_to_text(structured_plan)
             title = generate_video_title(text[:1000])
@@ -454,6 +467,7 @@ def download_if_remote(pdf_file_path):
             import requests
             import time as _time
             file_name = os.path.join("./cache", "cached_pdf.pdf")
+            os.makedirs(os.path.dirname(file_name), exist_ok=True)
             for attempt in range(max_retries):
                 try:
                     response = requests.get(url, timeout=60)
@@ -688,7 +702,9 @@ def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().str
                     (get_paper_demo_website, text[:1000]),
                     (generate_origin_title, text[:200]),
                     (generate_video_title, text[:200]),
-                    (lambda t: generate_structured_video_plan(t, word_budget=word_budget['summary']), text),
+                    (lambda t: generate_structured_video_plan(
+                        t, word_budget=word_budget['summary'],
+                        arxiv_id=(None if blog_url else _derive_arxiv_id_for_plan(getattr(paper, 'link', None)))), text),
                 ]
             )
             logging.info("生成结构化视频脚本（long 模式）")

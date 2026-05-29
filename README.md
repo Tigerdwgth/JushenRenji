@@ -73,10 +73,24 @@
 16. **三平台评论自动回复**：B站走 `bilibili-api-python` 官方 API、小红书走 `xhs` 库（SAU venv 子进程）、抖音读路径走 [`Johnserf-Seed/f2`](https://github.com/Johnserf-Seed/f2) mobile API（cookie 月级稳定，跟 PC 创作者中心风控通道隔离）+ 写路径走 chromium daemon CDP。LLM 活泼互动人设统一回复，sqlite 去重 + 日上限节流（B站 50/小红书 15/抖音 20）。
 17. **创作者中心数据聚合**：B站直接 API；小红书/抖音 mobile API（f2）；sqlite 存储 + ASCII summary 表 + CLI 子命令 (`fetch` / `summary`)；可选飞书多维表格上报（stub，需配置 lark 凭证）。
 18. **Manim-only 模式**：`--manim` 时跳过 main video 渲染（节省 60-95 分钟），仅生成 manim 视频作为最终输出。`paperagent_workflow.generate_daily_arxiv_summary(skip_main_video=True)` 控制；`structured_plan` + `paper_text` 同步缓存到 `cache/` 供后续 manim 阶段读取。
-19. **Manim 累加显示**：单屏 5 个元素以内禁止中途 FadeOut，元素累加 FadeIn 直至本场景结束统一一次 FadeOut；`_ensure_page_fadeouts` 已禁用避免 post-process 强插中间 FadeOut。
+19. **Manim 累加显示 + 文字重叠守卫**：单屏 5 个元素以内禁止中途 FadeOut，元素累加 FadeIn 直至本场景结束统一一次 FadeOut；`_ensure_page_fadeouts` 已禁用避免 post-process 强插中间 FadeOut。`_inject_text_overlap_guard` 运行时包裹 `self.play`，每次播放后按包围盒检测文字 mobject 重叠（交叠面积 / **较大块面积** > 0.5，要求两块大幅互相重合才判定为糊成一团），只保留最上层（最新/ z_index 最高）文字，把被遮挡的下层文字 FadeOut —— 即"新文字出现后只显示最上层的文字"，不重叠的文字仍累加保留。文字类型用 `isinstance` 识别（覆盖 Title 等子类）；阈值用较大块面积归一化，避免小标签压在大段落角落时误删整段。
 20. **opencode 全文上下文**：取消论文文本截取（之前 `[:2000]` / `[:1500]`），DeepSeek-V4-Pro 长上下文窗口直接吃论文全文，提升 manim 代码与方法图分析质量。
 21. **Chromium daemon + CDP attach**（Docker 容器自包含写路径方案）：长跑 chromium 进程（Xvfb headed）+ aiohttp 健康检查 endpoint，所有抖音写操作（上传/评论回复）通过 `connect_over_cdp` 复用同一 page，避免反复装载 cookie 触发风控吊销。
 22. **Docker 化容器自包含部署**：`docker compose up -d` 一键起 paperagent + xhs-mcp + chromium-daemon 三个 service，cookie / config / cache 走 volume mount。详见 `docs/DOCKER.md`。
+23. **核心公式讲解 + 自适应 scene**：从论文自动挑选最多 2 个核心公式（损失/目标/核心机制），在 Manim 视频里插入 FormulaScene 逐项讲解——整条公式 Write 出现后，逐项 FadeIn 中文注解 + Indicate 高亮当前项，最后统一 FadeOut。
+    - **自适应 scene 编排**：固定 4 段（Title/Intro/Method/Results）基础上，按提取到的有效公式数在 **Method 与 Results 之间**插入 FormulaScene；0 公式 → 4 scene（与老链路字节级一致），1 公式 → 5 scene，≥2 公式 → 6 scene。**公式 ≤ 2、总 scene ≤ 6** 为硬上限，超出截断。
+    - **源码优先 + LLM 兜底**：有 arxiv_id 且能拉到 `.tex` 源码时，`extract_equations` 抽行间公式候选喂 LLM 精选（最准）；拿不到源码（含 `blog-` 前缀、无 arxiv_id）时回退到让 LLM 直接从正文识别公式。manim 链路已自动透传 arxiv_id（`paperagent_workflow` 两处 plan 调用 + `main.py` fallback）。
+    - **渲染前 LaTeX 预编译校验 + 降级**：每条公式 latex 先经 `validate_latex` 子进程预编译，不过则 LLM 修一次，仍不过直接丢弃，杜绝一个语法错的 `MathTex` 炸掉整条视频渲染。
+    - **开关**：`JSR_DISABLE_FORMULA=1` 一键关闭公式提取（功能默认开启，回到纯 4 scene）；`JSR_DISABLE_LATEX_VALIDATE=1` 跳过子进程预编译校验（信任输入，CI/无 latex 环境用）。
+    - 编排逻辑在 `ManimEngine._build_scene_defs(plan_scripts)`，公式提取在 `llm_tools.llm_agent._extract_core_formulas(text, arxiv_id)`；集成测试见 `tests/test_formula_pipeline.py`。
+24. **JS/Web 示意动画**：从论文自动挑选最多 2 个最值得动起来的场景，由 opencode 生成**自包含 HTML 动画**，headless playwright 逐帧录屏成 mp4，复用 blog 视频链路对齐 TTS 后作为独立 scene 嵌入视频——和公式 scene 平行的一条「外部 mp4 注入」管线。
+    - **两类示意**：`concrete`（具象卡通，机器人/操作任务等物理场景）与 `abstract`（抽象机制，算法流程/数据流/网络结构）；plan 层按论文核心任务/机制自动判定 kind。
+    - **自适应 scene 编排**：固定 4 段（Title/Intro/Method/Results）基础上，`position=intro_after` 的示意插在 IntroScene 之后、Method 之前（任务引子），`position=method` 的插在 method 区末尾（公式 scene 之后、Results 之前）。**总 scene ≤ 7、额外（公式 + 示意）≤ 3** 为硬上限：公式优先占额度（论文核心），示意用剩余额度且自身上限 2，超出截断丢弃。
+    - **技术栈**：标准 **playwright**（非 patchright——其 evaluate 跑在 isolated world，访问不到页面 `window.renderFrame`）+ 复用 `~/.cache/ms-playwright` 已有 chromium（`executable_path` 启动，不必下新版本）+ HTML 侧 `window.renderFrame(n)` **确定性逐帧渲染**（禁 setTimeout/requestAnimationFrame/Date.now，总时长 = `TOTAL_FRAMES/FPS` 精确可控，正好喂 TTS 对齐）。
+    - **画面来源（阶段 2 预留）**：spec 含 `prefer_real_demo` 字段，物理拟真度高（布料形变/接触力学/真机操作）的场景标记为优先用论文真实 demo 视频；本阶段统一走 JS 生成，真实 demo 抓取留待阶段 2。
+    - **失败降级**：HTML 生成或 HTML→mp4 渲染任一失败，该示意 scene 整条干净丢弃（同步剔除 scene_defs/narrations 并重建索引），不影响其余 scene。
+    - **开关**：`JSR_DISABLE_JS_ANIM=1` 一键关闭示意动画提取（功能默认开启，回到公式/纯 4 scene 编排）；plan 提取任何异常一律 fallback `[]`，绝不炸掉整条 plan。
+    - 编排逻辑在 `ManimEngine._build_scene_defs(plan_scripts)`（注入 AnimScene）+ `apply_anim_render_results`（渲染失败重建索引），渲染底座在 `js_anim_engine.{_opencode_generate_html, render_html_to_mp4}`，示意提取在 `llm_tools.llm_agent._extract_scene_animations(text, arxiv_id)`；编排层集成测试见 `tests/test_js_anim.py`，渲染底座单测见 `tests/test_js_anim_engine.py`。
 
 ## 使用说明
 

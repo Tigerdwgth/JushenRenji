@@ -260,6 +260,26 @@ _MANIM_ARCHITECTURE_RULES = (
     "A7. 【密集网格优先用 arrange 而非手算】当一组同类元素 >= 3 个时, 不要逐个 move_to,\n"
     "    用 VGroup(*items).arrange(direction, buff=...) 然后 .move_to(group_center). 这样保证\n"
     "    不重叠且对齐. 仅当 EB 数据明确给出每个元素位于不同象限时才允许逐个 move_to.\n"
+    "A8. 【强制心算 bbox 表 — 写 self.add/self.play 前必做】在 construct() 里第一次 self.play\n"
+    "    之前, 必须以注释形式给出当前所有 sibling-level mobject 的 bbox 表:\n"
+    "        # === bbox plan (必须填, 渲染前自检, 出现重叠必须重排) ===\n"
+    "        # name           cx       cy       w        h\n"
+    "        # title         0.00    +3.20    8.00    0.80\n"
+    "        # main_block    0.00    +0.50    4.00    2.00\n"
+    "        # side_label   -3.00    +2.50    2.50    0.50\n"
+    "        # ...\n"
+    "        # sibling pair check (IoU > 0.15 = 违规, nested = 嵌套设计不算违规):\n"
+    "        # title vs main_block: y_diff 2.7, (h1+h2)/2+0.1=1.5 → 不重叠 ✓\n"
+    "        # title vs side_label: 双方 bbox 在 x∈[-7,7] y∈[-3.5,3.5], cx 间距 3.0 ≥ 半宽和 5.25? 否 → 检 y, y_diff 0.7 < 0.65+0.1 → 重叠 ✗ 必须挪 side_label\n"
+    "        # ... 列出所有 N*(N-1)/2 对, 全 ✓ 才能写下面的 self.play\n"
+    "    心算表不允许跳过。EB 给的精确坐标使用前必须把它们填进表里检一遍, 发现重叠就 .scale() 整组或 .arrange() 重排, 不允许硬塞精确坐标导致明显重叠。\n"
+    "A9. 【提交前心算复核 — final pass】write 完整个 construct() 后, 在文件末尾以注释列出最终落地的全部 mobject (含子图、label、arrow) 的 bbox, 再做一次 sibling pair check。如果发现任何 IoU > 0.15 的非 nested 重叠, 不允许提交此版本代码 — 必须修代码再 Write 覆盖。这是渲染前的最后防线。\n"
+    "A10. 【已知重叠陷阱清单 — RIO/TAMP 实测出现过, 必避】:\n"
+    "    - 标题 Text 与 SurroundingRectangle/外框上沿 cy 接近 → 标题需 cy >= 3.0 留出 (h_title + h_outer)/2+0.2 间距\n"
+    "    - 中间椭圆/大 Rectangle 里再塞多行 Text → 椭圆内只许放一行 short Text; 多行用外置 VGroup.arrange(DOWN) 放椭圆下方\n"
+    "    - 底部'数据流: A→B→C'描述文字 与 右侧 Output box 横向接触 → 描述文字必须 cx 居中且 width <= 8, 或挪到 Output box 下方\n"
+    "    - label 在 box 外贴边漂浮 (常见 cy = box_cy + h/2 + 0.1) → label 应直接 move_to(box.get_center()) 放在 box 内, 而不是悬空在边上\n"
+    "    - 多个 box 横向 arrange(RIGHT, buff=0.3) 但单个 box width 太大 → 总宽超 frame, 必须 .scale(0.7) 整组或改 arrange(DOWN)\n"
 )
 
 
@@ -286,21 +306,28 @@ prompts_dict["manim_analyze_script"] = (
 )
 
 prompts_dict["manim_generate_formula"] = (
-    "【代码生成铁律 — 必须严格遵守】:\n- 这是一个独立的代码生成任务。不要 read / cat / inspect 工作目录中任何已存在的 .py 文件（它们是历史产物）。当 prompt 提供 \"论文原文路径\" 或 \"图像分析路径\" 时, 请使用 Read 工具读取该 .txt / .json 文件作为参考依据, 但禁止读取任何 .py 历史产物。\n- 推荐使用 Write 工具把最终代码写入当前工作目录下的 \\texttt{<scene_name>.py} (TitleScene.py / IntroScene.py / MethodScene.py / ResultsScene.py); 可用 Bash 运行 manim render -ql <scene_name>.py <scene_name> 自测语法与渲染。\n- 工作区严格限定: Write 与 Bash 只能在当前 cwd (已隔离到 temp_dir) 内操作; 禁止读写 cwd 之外的任何路径 (除 prompt 提供的 \"论文原文路径\" 或 \"图像分析路径\"); 不要 cd 到其他目录, 不要碰项目根的 .py 历史产物。\n- 输出方式两选一即可: 把代码 Write 到 \\texttt{<scene_name>.py} 文件 (推荐, 更稳定), 或在 stdout 输出单个 ```python ... ``` markdown 代码块。\n- 直接基于下面给定的论文内容与分析数据，从零开始写完整可运行的 Manim 代码。\n- 输出必须是唯一一个 ```python ... ``` markdown 代码块，包含完整可运行的 Manim Scene。\n- 若工作目录中已有同名场景文件（TitleScene.py / MethodScene.py / IntroScene.py / ResultsScene.py 等），请全部忽略，它们是无关历史产物。\n- 严禁输出 “已有/查看/已经满足需求/不需要修改” 这类描述语。\n\n"
-    "你是 ManimCE (Manim Community Edition) 专家。请生成一个展示数学公式推导的 Manim Scene。\n\n"
+    "【代码生成铁律 — 必须严格遵守】:\n- 这是一个独立的代码生成任务。不要 read / cat / inspect 工作目录中任何已存在的 .py 文件（它们是历史产物）。当 prompt 提供 \"论文原文路径\" 或 \"图像分析路径\" 时, 请使用 Read 工具读取该 .txt / .json 文件作为参考依据, 但禁止读取任何 .py 历史产物。\n- 推荐使用 Write 工具把最终代码写入当前工作目录下的 \\texttt{<scene_name>.py} (TitleScene.py / IntroScene.py / MethodScene.py / ResultsScene.py); 可用 Bash 运行 manim render -ql <scene_name>.py <scene_name> 自测语法与渲染。\n- 工作区严格限定: Write 与 Bash 只能在当前 cwd (已隔离到 temp_dir) 内操作; 禁止读写 cwd 之外的任何路径 (除 prompt 提供的 \"论文原文路径\" 或 \"图像分析路径\"); 不要 cd 到其他目录, 不要碰项目根的 .py 历史产物。\n- 输出方式两选一即可: 把代码 Write 到 \\texttt{<scene_name>.py} 文件 (推荐, 更稳定), 或在 stdout 输出单个 ```python ... ``` markdown 代码块。\n- 类名严格等于下方 user_content 中提供的 scene_name。\n- 直接基于下面给定的论文内容与分析数据，从零开始写完整可运行的 Manim 代码。\n- 输出必须是唯一一个 ```python ... ``` markdown 代码块，包含完整可运行的 Manim Scene。\n- 若工作目录中已有同名场景文件，请全部忽略，它们是无关历史产物。\n- 严禁输出 \u201c已有/查看/已经满足需求/不需要修改\u201d 这类描述语。\n\n"
+    "你是 ManimCE (Manim Community Edition) 专家。本场景的唯一目标是**讲解这篇论文的一条核心公式**：把整条公式完整显示出来, 再配合中文解说逐项高亮其含义, 让观众真正看懂每一项代表什么。\n\n"
+    "你会在下方 user_content 中收到以下输入（字段名即关键词, 出现哪个用哪个）：\n"
+    "- scene_name: 必须用作 Scene 类名。\n"
+    "- LaTeX 公式: 要讲解的核心公式主体 (LaTeX 源码)。\n"
+    "- 描述 / 脚本原文: 这条公式的中文讲解词, 决定你写哪些注解、解说节奏。\n"
+    "- highlights: 一个 JSON 数组形式的中文要点列表, 每条对应\"公式某一部分的中文含义\"（例如 [\"分子是注意力权重\", \"分母做归一化\"]）。若 user_content 提供了 highlights 就严格按它的顺序逐条讲解; 若未提供, 你需自行从 LaTeX 公式与讲解词中拆解出 2-4 条中文要点, 同样逐条讲解。\n\n"
     "代码要求：\n"
     "1. 使用 `from manim import *`\n"
-    "2. 类名使用提供的 scene_name\n"
-    "3. 动画流程（分步展示，每步之间先清理上一步）：\n"
-    "   - 第1步：显示公式标题（Text, font_size=28），停留1秒\n"
-    "   - 第2步：FadeOut 标题，用 Write 展示主公式（MathTex, scale=0.9），停留2秒\n"
-    "   - 第3步：用 Indicate 高亮公式中的关键变量，添加1-2个简短注释（Text, font_size=22），停留1.5秒\n"
-    "   - 第4步：FadeOut 注释，如有推导步骤用 TransformMatchingTex 变换公式，停留2秒\n"
-    "   - 第5步：FadeOut 所有元素\n"
-    "4. 公式居中放置，注释放在公式下方\n"
-    "5. 总共不超过 6 个 play() 调用\n"
+    "2. 类名使用提供的 scene_name。\n"
+    "3. 【整条公式作为一个整体渲染】用一个 MathTex 把**整条公式作为单个完整字符串**渲染, .scale(0.7~0.8), 放在画面上方居中 (约 y=2.2, 或 to_edge(UP) 后略下移)。严禁拆成多个 MathTex 参数, 严禁用 substrings_to_isolate, 严禁 set_color_by_tex, 严禁 TransformMatchingTex（见下方 LaTeX 铁律 L2/L3/L4/L6, 括号匹配极易炸）。\n"
+    "4. 【粗粒度逐项高亮 — 本场景核心动画规约】：\n"
+    "   - 第1步：self.play(Write(formula), run_time>=0.8) 把整条公式整体写出, 然后 self.wait（按讲解词字数 \u201c每6个中文字>=1秒\u201d, 不少于 2 秒）。\n"
+    "   - 第2步：**按 highlights 的顺序**逐条讲解, 第 i 条要点：\n"
+    "       a) 在公式下方依次 FadeIn 一行中文注解 Text（font_size=18~20）, 多条注解**累加显示、不清屏**（遵守通用铁律的累加显示原则）, 用 VGroup.arrange(DOWN, buff=0.3) 或逐行 next_to 往下排, 整体不超出 y=-3.0。\n"
+    "       b) 同时对整条公式做一次 self.play(Indicate(formula)) 作为视觉提示（指向当前正在讲的公式整体, 不要去 indicate 公式的某个子串）。\n"
+    "       c) 每条要点之间 self.wait（按该条注解中文字数估算时长, 不少于 1.5 秒）, 给解说留出时间。\n"
+    "   - 第3步：所有要点讲完后, self.play(FadeOut(...)) 统一清屏。\n"
+    "5. 【禁止拆式】不要把公式拆成分项做 TransformMatchingTex, 不要 set_color_by_tex 给子项上色。逐项高亮一律通过\u201c公式下方逐条累加中文注解 + 对整条公式 Indicate\u201d实现, 以规避括号/子串匹配炸裂的风险。\n"
+    "6. 注解中文文字不要指定 font 参数（用系统默认字体）。\n"
     + _MANIM_COMMON_RULES + _MANIM_LATEX_RULES +
-    "仅输出完整的 Python 代码，不要 markdown 代码块标记，不要解释文字。\n"
+    "仅输出完整的 Python 代码（一个 ```python``` 代码块或 Write 到 <scene_name>.py），不要额外解释文字。\n"
 )
 
 prompts_dict["manim_generate_architecture"] = (
@@ -440,3 +467,33 @@ prompts_dict["manim_generate_architecture_from_figure"] = (
 )
 
 
+
+
+prompts_dict["js_anim_generate"] = (
+    "【代码生成铁律 — 必须严格遵守】:\n"
+    "- 这是一个独立的代码生成任务。不要 read / cat / inspect 工作目录中任何已存在的文件（它们是历史产物）。从零开始写。\n"
+    "- 仅输出唯一一个 ```html ... ``` markdown 代码块, 不要任何额外解释文字, 不要第二个代码块。\n"
+    "- 必须完全自包含: 内联 JS + 内联 CSS, 禁止任何外部资源（禁止 CDN、禁止外链脚本/样式、禁止外部图片、禁止网络字体）。整页只用浏览器原生 API。\n"
+    "- 严禁输出 “已有/查看/已经满足需求/不需要修改” 这类描述语。\n\n"
+    "你是 Web 动画讲解专家。本任务的唯一目标是产出**一个自包含 HTML 文件**, 用逐帧确定性渲染的方式做一段知识讲解动画, 供录屏管线逐帧截图合成视频。\n\n"
+    "【硬性技术契约 — 录屏管线强依赖, 必须严格逐条遵守】:\n"
+    "1. 画布固定 1280×720: 用一个 <canvas width=\"1280\" height=\"720\"> (或等大的 <svg width=\"1280\" height=\"720\">); 白色背景; <body> 的 margin 和 padding 必须为 0, 不要让画布之外出现任何留白或滚动条。\n"
+    "2. 必须在全局 (window 上) 定义三个成员, 录屏脚本会直接读取与调用:\n"
+    "   - window.FPS: 帧率, 建议设为 24。\n"
+    "   - window.TOTAL_FRAMES: 整数, 等于 目标秒数 × FPS (见下方目标时长说明)。\n"
+    "   - window.renderFrame(frameIndex): 渲染函数, 入参为帧序号。\n"
+    "3. window.renderFrame(n) 必须是**纯函数式确定渲染**: 对同一个 n, 任意时刻调用都渲染出完全相同的一帧; 函数内部先清空画布再完整重绘该帧, 不得依赖上一次调用留下的状态。\n"
+    "4. 【严禁基于真实时间驱动动画】: 禁止用 setTimeout / setInterval / requestAnimationFrame / Date.now / performance.now 推进动画。录屏是逐帧调用 renderFrame(0), renderFrame(1), ... renderFrame(TOTAL_FRAMES-1) 后分别截图, 任何依赖真实流逝时间的动画都会全部失效。动画进度必须完全由 frameIndex 决定, 例如 `const t = n / window.TOTAL_FRAMES;` 得到 0→1 的归一化进度, 再据 t 插值出该帧所有元素的位置/透明度/形变。\n"
+    "5. 页面加载完成后立即调用一次 window.renderFrame(0), 保证首帧可见。\n\n"
+    "【目标时长】: 你会在下文收到 target_seconds (目标秒数)。据此设 `window.TOTAL_FRAMES = Math.round(target_seconds * window.FPS);`, 并把整段动画的节奏铺满这个时长。\n\n"
+    "【两类示意的画法指导】: 你会在下文收到 kind, 取值为 concrete 或 abstract, 据此选择画法:\n"
+    "- concrete (具象卡通示意, 如机械臂 / 夹爪 / 物体 / 叠衣服等物理场景): 用简洁色块、圆角矩形、路径表示物体, 通过关键姿态之间的插值做运动。例如: 夹爪开合 = 两个矩形的间距随 t 变化; 物体位移 = 坐标随 t 线性插值; 叠衣服 = 在几个关键帧姿态(摊开→对折→再折)之间按 t 分段插值矩形的翻折。扁平干净风格, 不追求拟真。\n"
+    "- abstract (抽象机制示意, 如数据流 / 模块交互 / 注意力机制): 用方框 + 箭头 + 流动高亮 + 渐变表达; 元素随 t 依次出现、连线、再让高亮沿连线流动。\n"
+    "- 通用风格: 扁平设计; 配色克制专业, 全程只用 2-3 种主色; 中文文字标注用 sans-serif 字体、居中、清晰可读; 适合知识讲解; 元素出现与运动带缓动(ease, 例如对 t 做 smoothstep 或三次缓动), 不要生硬线性。\n\n"
+    "【下文输入说明】(以下字段会以自然语言形式出现在 user_content 中, 不是模板占位符):\n"
+    "- scene_name: 产物文件名与主类/标题用名, 命名随意但需对应该场景。\n"
+    "- 场景描述: 需要被可视化讲解的具体内容, 动画必须忠实于它, 不要画无关的通用示例。\n"
+    "- target_seconds: 目标秒数, 用于计算 TOTAL_FRAMES。\n"
+    "- kind: concrete 或 abstract, 决定上面的画法。\n\n"
+    "仅输出唯一一个 ```html ... ``` 代码块, 包含完整可直接用浏览器打开的自包含页面。\n"
+)
