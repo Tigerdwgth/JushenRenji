@@ -431,19 +431,25 @@ def get_audio_info(file_path: str) -> dict:
 # TTS 后端统一入口 (新加, 向前兼容老 dashscope 调用)
 # ---------------------------------------------------------------------------
 
-def _resolve_minimax_key() -> Optional[str]:
-    """读取 MiniMax api_key, 优先 env 后 config."""
-    k = os.getenv("JSR_MINIMAX_API_KEY")
-    if k:
-        return k
+def _cfg_get(key: str, default=None):
+    """读取 src.config._config 的某项 (软依赖: 测试场景 config 可能未加载)。
+
+    统一封装 'try src.config import _config except config import _config; _config.get(...)'
+    这段原本在多个函数里逐字复制。
+    """
     try:
         try:
             from src.config import _config  # type: ignore
         except ImportError:
             from config import _config  # type: ignore
-        return _config.get("minimax_api_key") or None
+        return _config.get(key, default)
     except Exception:
-        return None
+        return default
+
+
+def _resolve_minimax_key() -> Optional[str]:
+    """读取 MiniMax api_key, 优先 env 后 config."""
+    return os.getenv("JSR_MINIMAX_API_KEY") or _cfg_get("minimax_api_key") or None
 
 
 def _resolve_minimax_voice() -> str:
@@ -452,16 +458,9 @@ def _resolve_minimax_voice() -> str:
     v = os.getenv("JSR_MINIMAX_VOICE_ID") or os.getenv("JSR_TTS_VOICE")
     if v and v != "longxiaochun_v2":
         return v
-    try:
-        try:
-            from src.config import _config  # type: ignore
-        except ImportError:
-            from config import _config  # type: ignore
-        cv = _config.get("minimax_voice_id") or _config.get("tts_voice")
-        if cv and cv != "longxiaochun_v2":
-            return cv
-    except Exception:
-        pass
+    cv = _cfg_get("minimax_voice_id") or _cfg_get("tts_voice")
+    if cv and cv != "longxiaochun_v2":
+        return cv
     return "male-qn-qingse"
 
 
@@ -476,21 +475,99 @@ def _synthesize_dashscope(text: str, model: str, voice: str) -> bytes:
     """老路径包装: dashscope.audio.tts_v2.SpeechSynthesizer."""
     import dashscope  # noqa: F401  保留 import 触发 SDK 全局 api_key 注入
     from dashscope.audio.tts_v2 import SpeechSynthesizer
-    try:
-        try:
-            from src.config import _config  # type: ignore
-        except ImportError:
-            from config import _config  # type: ignore
-        ds_key = _config.get("dashscope_api_key") or ""
-        if ds_key:
-            dashscope.api_key = ds_key
-    except Exception:
-        pass
+    ds_key = _resolve_dashscope_key()
+    if ds_key:
+        dashscope.api_key = ds_key
     ss = SpeechSynthesizer(model=model, voice=voice)
     data = ss.call(text)
     if not data:
         raise RuntimeError(f"dashscope TTS 返回空 (model={model}, voice={voice})")
     return data
+
+
+# Qwen3-TTS (百炼 multimodal-generation HTTP 接口, 新一代)
+QWEN_TTS_ENDPOINT = (
+    "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
+)
+QWEN_TTS_DEFAULT_VOICE = "Ethan"  # 男声; 回退也用它, 保证全片音色一致不变声
+
+
+def _is_qwen_model(model: str) -> bool:
+    if not model:
+        return False
+    m = model.lower()
+    return "qwen" in m and "tts" in m
+
+
+def _resolve_dashscope_key() -> str:
+    """读取 DashScope api_key, 优先 env 后 config。"""
+    return os.getenv("DASHSCOPE_API_KEY") or _cfg_get("dashscope_api_key") or ""
+
+
+def _synthesize_qwen(text: str, model: str = "qwen3-tts-flash",
+                     voice: str = QWEN_TTS_DEFAULT_VOICE,
+                     language_type: str = "Chinese", attempts: int = 3) -> bytes:
+    """Qwen3-TTS 合成, 返回音频 bytes (wav)。
+
+    走百炼 HTTP: POST 拿 output.audio.url (24h) 再下载; 失败重试**同音色**,
+    绝不切换到别的引擎/音色 —— 宁可该段失败也不变声。
+    """
+    import time
+    import requests
+    key = _resolve_dashscope_key()
+    if not key:
+        raise RuntimeError("Qwen-TTS: dashscope_api_key 缺失")
+    headers = {"Authorization": "Bearer " + key, "Content-Type": "application/json"}
+    body = {"model": model, "input": {"text": text, "voice": voice, "language_type": language_type}}
+    # 用 trust_env=False 的 session: dashscope/OSS 是国内站点, 必须直连。无视外部 http_proxy
+    # 即使调用方没设 NO_PROXY 也不会被误路由到 clash 代理 (memory: dashscope 必须 NO_PROXY)。
+    session = requests.Session()
+    session.trust_env = False
+    last = None
+    for i in range(attempts):
+        r = None
+        try:
+            r = session.post(QWEN_TTS_ENDPOINT, headers=headers, json=body, timeout=60)
+            r.raise_for_status()
+            j = r.json()
+            au = (j.get("output") or {}).get("audio") or {}
+            url = au.get("url")
+            if url:
+                ar = session.get(url, timeout=60)
+                ar.raise_for_status()  # CDN 错误页(403/5xx)不能当音频
+                audio = ar.content
+                if audio:
+                    return audio
+            data = au.get("data")
+            if data:
+                import base64
+                return base64.b64decode(data)
+            raise RuntimeError("Qwen-TTS 无音频: " + str(j)[:200])
+        except Exception as exc:
+            last = exc
+            ctx = ""
+            if r is not None:
+                try:
+                    ctx = " (status=%s body=%r)" % (r.status_code, (r.text or "")[:200])
+                except Exception:
+                    pass
+            audio_logger.warning("Qwen-TTS 失败 retry %d/%d: %s%s", i + 1, attempts, exc, ctx)
+            time.sleep(3)
+    raise RuntimeError("Qwen-TTS 连续 %d 次失败: %s" % (attempts, last))
+
+
+class _QwenSynthesizerAdapter:
+    """SS-like adapter, 给老调用方 ss.call(text) 模式用 (video_creator safe_tts_save)。"""
+    def __init__(self, model: str, voice: str):
+        self._model = model
+        self._voice = voice
+
+    def call(self, text: str):
+        try:
+            return _synthesize_qwen(text, model=self._model, voice=self._voice)
+        except Exception as exc:
+            audio_logger.warning("Qwen adapter 调用失败: %s", exc)
+            return None  # 模仿 dashscope 失败时返回空
 
 
 def synthesize_tts(text: str) -> bytes:
@@ -500,24 +577,28 @@ def synthesize_tts(text: str) -> bytes:
     失败 (含 minimax 失败 + dashscope fallback 也失败) raise RuntimeError.
     """
     model, voice = get_tts_config()
+    # 新一代主路径: Qwen3-TTS (失败重试同音色, 不变声)
+    if _is_qwen_model(model):
+        return _synthesize_qwen(text, model=model, voice=voice)
     if _is_minimax_model(model):
         from .tts_minimax import synthesize_minimax, MiniMaxTTSError  # type: ignore
         api_key = _resolve_minimax_key()
         voice_id = _resolve_minimax_voice()
         if not api_key:
             audio_logger.warning(
-                "MiniMax model=%s 但 minimax_api_key 缺失, fallback dashscope", model
+                "MiniMax model=%s 但 minimax_api_key 缺失, fallback Qwen-TTS(男声)", model
             )
-            return _synthesize_dashscope(text, "cosyvoice-v2", "longxiaochun_v2")
+            return _synthesize_qwen(text, voice=QWEN_TTS_DEFAULT_VOICE)
         try:
             return synthesize_minimax(
                 text, api_key=api_key, model=model, voice_id=voice_id
             )
         except MiniMaxTTSError as exc:
+            # 回退到 Qwen 男声而非 dashscope longxiaochun 女声, 避免中途变声
             audio_logger.warning(
-                "MiniMax TTS 失败, fallback dashscope: %s", exc
+                "MiniMax TTS 失败, fallback Qwen-TTS(男声): %s", exc
             )
-            return _synthesize_dashscope(text, "cosyvoice-v2", "longxiaochun_v2")
+            return _synthesize_qwen(text, voice=QWEN_TTS_DEFAULT_VOICE)
     # 默认老路径
     return _synthesize_dashscope(text, model, voice)
 
@@ -549,29 +630,23 @@ def make_tts_synthesizer():
     给 video_creator 老链路 (safe_tts_save(ss, ...)) 用, 老接口 0 改动.
     """
     model, voice = get_tts_config()
+    if _is_qwen_model(model):
+        return _QwenSynthesizerAdapter(model=model, voice=voice)
     if _is_minimax_model(model):
         api_key = _resolve_minimax_key()
         if not api_key:
             audio_logger.warning(
-                "MiniMax model=%s 但 minimax_api_key 缺失, factory 退化为 dashscope cosyvoice-v2",
+                "MiniMax model=%s 但 minimax_api_key 缺失, factory 退化为 Qwen-TTS(男声)",
                 model,
             )
-            from dashscope.audio.tts_v2 import SpeechSynthesizer
-            return SpeechSynthesizer(model="cosyvoice-v2", voice="longxiaochun_v2")
+            return _QwenSynthesizerAdapter(model="qwen3-tts-flash", voice=QWEN_TTS_DEFAULT_VOICE)
         return _MiniMaxSynthesizerAdapter(
             model=model, voice_id=_resolve_minimax_voice(), api_key=api_key,
         )
-    # 默认老路径
+    # 默认老路径: 与 _synthesize_dashscope 一致, 用 _resolve_dashscope_key 同时读 env+config
     import dashscope  # noqa: F401
     from dashscope.audio.tts_v2 import SpeechSynthesizer
-    try:
-        try:
-            from src.config import _config  # type: ignore
-        except ImportError:
-            from config import _config  # type: ignore
-        ds_key = _config.get("dashscope_api_key") or ""
-        if ds_key:
-            dashscope.api_key = ds_key
-    except Exception:
-        pass
+    ds_key = _resolve_dashscope_key()
+    if ds_key:
+        dashscope.api_key = ds_key
     return SpeechSynthesizer(model=model, voice=voice)

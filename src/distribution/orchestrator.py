@@ -132,6 +132,7 @@ def _build_compact_description(
     total_limit: int,
     summary_limit: int,
     include_cn_titles: bool = False,
+    include_links: bool = True,
 ) -> str:
     lines: List[str] = []
     num_papers = max(
@@ -152,8 +153,8 @@ def _build_compact_description(
         for line in (
             f"中文标题：{cn_title}" if include_cn_titles and cn_title else "",
             f"论文标题：{title}" if title else "",
-            f"论文链接：{paper_link}" if paper_link else "",
-            f"项目链接：{project_link}" if project_link else "",
+            f"论文链接：{paper_link}" if include_links and paper_link else "",
+            f"项目链接：{project_link}" if include_links and project_link else "",
         ):
             if not _append_line_with_limit(lines, line, total_limit):
                 return "\n".join(lines).strip()
@@ -179,7 +180,7 @@ def _build_xhs_content(
     paper_links: Optional[List[str]] = None,
     project_links: Optional[List[str]] = None,
 ) -> str:
-    """构建小红书文案：仅保留论文名，且控制为精简简介。"""
+    """构建小红书文案：仅保留论文名+摘要，**不含任何链接**（小红书简介带链接会被限流）。"""
     return _build_compact_description(
         video_desc=video_desc,
         cn_titles=cn_titles,
@@ -190,6 +191,7 @@ def _build_xhs_content(
         total_limit=XHS_CONTENT_LIMIT,
         summary_limit=XHS_SUMMARY_LIMIT,
         include_cn_titles=True,
+        include_links=False,
     )
 
 
@@ -201,7 +203,7 @@ def _build_bilibili_desc(
     paper_links: Optional[List[str]] = None,
     project_links: Optional[List[str]] = None,
 ) -> str:
-    """构建B站视频简介：仅保留论文名，并压缩为上传限制内。"""
+    """构建B站视频简介：仅保留论文名+摘要，**不含任何链接**（B站简介带链接会被限流）。"""
     return _build_compact_description(
         video_desc=video_desc,
         cn_titles=cn_titles,
@@ -211,6 +213,7 @@ def _build_bilibili_desc(
         summaries=summaries,
         total_limit=BILIBILI_DESC_LIMIT,
         summary_limit=BILIBILI_SUMMARY_LIMIT,
+        include_links=False,
     )
 
 
