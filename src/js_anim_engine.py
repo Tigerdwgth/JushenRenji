@@ -26,6 +26,7 @@ import glob
 import logging
 import subprocess
 import tempfile
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -260,6 +261,45 @@ def _opencode_generate_html(prompt_text, scene_name, temp_dir):
             return None
 
     return scene_html_path
+
+
+def _opencode_generate_html_with_retry(prompt_text, scene_name, temp_dir,
+                                       attempts=3, retry_sleep=3.0):
+    """对 ``_opencode_generate_html`` 做 attempts 次重试(对齐 manim 的重试模式)。
+
+    治本 opencode silent abort: deepseek-v4-pro 偶发 returncode=0 但 stdout 为空/
+    只有 banner(``\n> build · deepseek-v4-pro\n\n``), 不产出内容。单次调用下
+    ``_opencode_generate_html`` 提取不到合法 HTML(stdout 空/只 banner/契约校验
+    ``<canvas>/<svg> + renderFrame + TOTAL_FRAMES`` 不过)会返回 None 直接降级丢弃。
+
+    判定"需要重试"的条件 = 本次返回 None(即提取不到合法 HTML)。
+    每次失败 sleep 后重试, attempts 次全失败才返回 None(保留上层降级逻辑)。
+    与 ``manim_engine._opencode_generate_with_retry`` 同构, 不另造一套。
+
+    Args:
+        prompt_text/scene_name/temp_dir: 透传给 ``_opencode_generate_html``。
+        attempts: 最大尝试次数(默认 3, 对齐 manim)。
+        retry_sleep: 两次尝试之间的等待秒数。
+
+    Returns:
+        成功返回合法 HTML 文件路径; attempts 次全失败返回 None(交由上层降级丢弃)。
+    """
+    for i in range(attempts):
+        path = _opencode_generate_html(prompt_text, scene_name, temp_dir)
+        if path:
+            if i > 0:
+                logger.info("opencode(html) 第 %d/%d 次重试成功: %s",
+                            i + 1, attempts, scene_name)
+            return path
+        logger.warning(
+            "opencode(html) silent abort / 提取不到合法 HTML (第 %d/%d 次): %s",
+            i + 1, attempts, scene_name,
+        )
+        if i < attempts - 1 and retry_sleep > 0:
+            time.sleep(retry_sleep)
+    logger.error("opencode(html) 连续 %d 次失败, 放弃(降级丢弃): %s",
+                 attempts, scene_name)
+    return None
 
 
 def render_html_to_mp4(html_path, out_mp4_path, fallback_fps=24,

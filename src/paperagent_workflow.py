@@ -452,6 +452,9 @@ def download_if_remote(pdf_file_path):
     注意：
     - 下载的文件会保存为 `./cache/cached_pdf.pdf`。
     """
+    # 本地已存在的文件路径：直接返回，不下载（本地 PDF 入口的解耦点）。
+    if pdf_file_path and not pdf_file_path.startswith("http") and os.path.isfile(pdf_file_path):
+        return pdf_file_path
     if pdf_file_path.startswith("http"):
         # 缓存检测：如果 cached_pdf.pdf 存在且不超过 1 小时，直接复用
         cache_path = os.path.join("./cache", "cached_pdf.pdf")
@@ -491,7 +494,7 @@ def download_if_remote(pdf_file_path):
         return -1
     return pdf_file_path
 
-def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().strftime(r"%Y-%m-%d"), max_papers=20, output_filename="./output/daily_summary.mp4",long_or_short="short",target_duration=300, paper_link=None, skip_main_video=False, blog_url=None):
+def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().strftime(r"%Y-%m-%d"), max_papers=20, output_filename="./output/daily_summary.mp4",long_or_short="short",target_duration=300, paper_link=None, skip_main_video=False, blog_url=None, local_pdf_path=None):
     """
     为每天 arXiv 上的论文生成一个简短的日报性总结视频。
     参数：
@@ -502,8 +505,43 @@ def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().str
     """
     logging.info("开始生成每日 arXiv 论文总结视频")
     _clean_pipeline_cache()
+    _local_aid = None
+    if local_pdf_path:
+        import hashlib as _hashlib
+        _local_aid = "local-" + _hashlib.md5(os.path.abspath(local_pdf_path).encode()).hexdigest()[:8]
     cn_titles = []
-    if paper_link:
+    if local_pdf_path:
+        # 本地 PDF 模式: link 直接是本地 PDF 路径, 后续 download_if_remote 短路返回本地文件,
+        # 复用标准 PDF 处理链 (PDFProcessor 提文本/图, 图像解释, 公式走 LLM 兜底)。
+        if not os.path.isfile(local_pdf_path):
+            raise RuntimeError(f"本地 PDF 不存在: {local_pdf_path}")
+        # 标题: 优先从 PDF 文本启发式提取, 拿不到用文件名 stem; 摘要: 从正文前段提取。
+        _local_title = ""
+        _local_abstract = ""
+        try:
+            _lp_proc = PDFProcessor(local_pdf_path)
+            _lp_text = _lp_proc.extract_text() or ""
+            _local_abstract = extract_abstract_from_text(_lp_text)
+            for _ln in (_lp_text.splitlines() if _lp_text else []):
+                _ln = _ln.strip()
+                if len(_ln) >= 8:
+                    _local_title = _ln
+                    break
+        except Exception as _e:
+            logging.warning("[local-pdf] PDF 文本预提取失败, 用文件名兜底: %s", _e)
+        if not _local_title:
+            _local_title = os.path.splitext(os.path.basename(local_pdf_path))[0]
+        papers = [Paper(
+            title=_local_title,
+            authors=[],
+            abstract=_local_abstract,
+            link=local_pdf_path,  # 直接是本地路径, download_if_remote 会短路返回
+            announced_date="",
+            submitted_date="",
+            comments="",
+        )]
+        logging.info(f"[local-pdf] 本地 PDF 入口: path={local_pdf_path} title={_local_title[:80]}")
+    elif paper_link:
         # 直接按 arxiv link / id 拉单篇，跳过 HTML 搜索 + 日期过滤
         from env_setup import parse_arxiv_link, fetch_arxiv_by_id
         arxiv_id = parse_arxiv_link(paper_link)
@@ -599,7 +637,11 @@ def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().str
                 images = images[:2]
         else:
             # 下载论文 PDF
-            pdf_url = paper.link.replace("abs", "pdf").split('v1')[0]
+            if local_pdf_path:
+                # 本地 PDF: paper.link 即本地路径, 不做 abs->pdf 替换, 直接走短路
+                pdf_url = paper.link
+            else:
+                pdf_url = paper.link.replace("abs", "pdf").split('v1')[0]
             pdf_file_path = download_if_remote(pdf_url)
             if not pdf_file_path or pdf_file_path == -1:
                 logging.warning(f"无法下载或找到 PDF 文件: {pdf_url}")
@@ -704,7 +746,7 @@ def generate_daily_arxiv_summary(query="cs.RO", date=datetime.datetime.now().str
                     (generate_video_title, text[:200]),
                     (lambda t: generate_structured_video_plan(
                         t, word_budget=word_budget['summary'],
-                        arxiv_id=(None if blog_url else _derive_arxiv_id_for_plan(getattr(paper, 'link', None)))), text),
+                        arxiv_id=(_local_aid if local_pdf_path else (None if blog_url else _derive_arxiv_id_for_plan(getattr(paper, 'link', None))))), text),
                 ]
             )
             logging.info("生成结构化视频脚本（long 模式）")

@@ -59,6 +59,14 @@ def parse_args():
              "Mutually exclusive with --paper-link / --filename / --discover. "
              "Pipeline 抓取 HTML 文本 + 图片 + 视频, 嵌入最终 mp4.",
     )
+    parser.add_argument(
+        "--pdf",
+        type=str,
+        default=None,
+        help="Local PDF file path (e.g. ./cache/report.pdf). 直接处理本地 PDF, "
+             "解耦获取 PDF 与处理 PDF。与 --paper-link / --filename / --discover / --blog-url 互斥。"
+             "非 arxiv PDF 无 arxiv id, 公式走 LLM 兜底, figure 走视觉。",
+    )
     #output length
     parser.add_argument(
         "--video_length",
@@ -137,11 +145,12 @@ if __name__ == "__main__":
         paper_link = getattr(args, "paper_link", None)
         discover_topic = getattr(args, "discover", None)
         blog_url = getattr(args, "blog_url", None)
-        # 四选一互斥
-        _given = sum(1 for x in (paper_link, filename, discover_topic, blog_url) if x)
+        local_pdf = getattr(args, "pdf", None)
+        # 五选一互斥
+        _given = sum(1 for x in (paper_link, filename, discover_topic, blog_url, local_pdf) if x)
         if _given > 1:
             raise ValueError(
-                "--paper-link / --filename / --discover / --blog-url 互斥, 请只传一个"
+                "--paper-link / --filename / --discover / --blog-url / --pdf 互斥, 请只传一个"
             )
         if blog_url:
             # blog 模式: 没 LaTeX 源码 → 关掉 figure_grounded, 走 caption-only baseline
@@ -171,7 +180,16 @@ if __name__ == "__main__":
             logging.info("[discover] picked %s (score=%.2f, reason=%s) -> %s",
                          pick["arxiv_id"], float(pick["score"]),
                          (pick["reason"] or "")[:80], paper_link)
-        if paper_link:
+        if local_pdf:
+            if not os.path.isfile(local_pdf):
+                raise ValueError(f"--pdf 指向的本地文件不存在: {local_pdf}")
+            import hashlib as _hashlib
+            arxiv_id = "local-" + _hashlib.md5(os.path.abspath(local_pdf).encode()).hexdigest()[:8]
+            # 标题留空, 由 generate_daily_arxiv_summary 从 PDF / 文件名提取; query 用文件名 stem
+            filename = os.path.splitext(os.path.basename(local_pdf))[0]
+            yesterday = today
+            logging.info("[local-pdf] path=%s arxiv_id=%s", local_pdf, arxiv_id)
+        elif paper_link:
             arxiv_id = parse_arxiv_link(paper_link)
             meta = fetch_arxiv_by_id(arxiv_id)
             filename = meta["title"]
@@ -191,7 +209,7 @@ if __name__ == "__main__":
                          len(_blog_meta.get("video_urls", [])))
         else:
             if not filename:
-                raise ValueError("必须给 --discover <topic> / --paper-link <url> / --filename <query> / --blog-url <url> 之一")
+                raise ValueError("必须给 --discover <topic> / --paper-link <url> / --filename <query> / --blog-url <url> / --pdf <path> 之一")
             weekday = today_dt.weekday()
             delta_days = {0: 3, 6: 2, 5: 1}.get(weekday, 1)
             yesterday = (today_dt - datetime.timedelta(days=delta_days)).strftime(r"%Y-%m-%d")
@@ -205,6 +223,7 @@ if __name__ == "__main__":
             paper_link=paper_link,
             skip_main_video=manim_mode,
             blog_url=blog_url,
+            local_pdf_path=local_pdf,
         )
         if manim_mode:
             # manim-only 模式: path 此时是预定路径还不存在, 由后续 ManimEngine 写入
@@ -238,7 +257,8 @@ if __name__ == "__main__":
                 logging.warning("未找到缓存的 structured_plan，将从论文重新生成")
                 # 尝试从最近的 PDF 中重新提取
                 import glob as _glob
-                cached_pdf = "./cache/cached_pdf.pdf"
+                # 本地 PDF 模式: 直接用本地 PDF 路径; 否则用下载缓存
+                cached_pdf = local_pdf if local_pdf else "./cache/cached_pdf.pdf"
                 if os.path.exists(cached_pdf):
                     proc = PDFProcessor(cached_pdf)
                     paper_text = proc.extract_text()

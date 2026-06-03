@@ -58,6 +58,7 @@
     - 双路结果融合后注入 architecture prompt，省去手工描述结构
     - 有精确 bbox 时，manim_context 仅输出语义（避免与精确坐标冲突）
 12. **--paper-link 精准入口**：传入 arxiv URL 直接获取论文元数据，跳过关键词搜索和日期过滤。
+13. **--pdf 本地 PDF 入口**：传入本地 PDF 文件路径，解耦"获取 PDF"与"处理 PDF"，直接复用标准 PDF 处理链（文本/图片提取、图像解释、Manim 公式/示意动画）出讲解视频。适用于非 arxiv、离线或已下载的 PDF。无 arxiv id 时公式自动走 LLM 兜底、figure 走视觉分析。`arxiv_id = "local-" + md5(abspath(pdf))[:8]`。与 `--paper-link / --filename / --discover / --blog-url` 五选一互斥。
 13. **arxiv LaTeX 源码直读** (v3.2)：给定 arxiv_id 时优先从 arxiv e-print tarball 提取 TikZ/矢量图元做结构化分析。
     - 模块 `src/arxiv_source_analyzer.py`：对外唯一入口 `try_structured_figure(arxiv_id, image_path, cache_root, paper_context)`
     - 路径 A（TikZ）：展开 `\input/\include` + 用户宏 → 抽 `\begin{figure}` → `parse_tikz_structure` 解析 `\node`/`\draw`
@@ -259,6 +260,13 @@ JSR_NETWORK_PROFILE=gsjts python src/main.py \\
     --paper-link https://arxiv.org/abs/2410.11758 \\
     --manim --manim-tts --target_duration 300 \\
     --platforms bilibili,xiaohongshu
+
+# 本地 PDF 直接出视频（解耦"获取 PDF"与"处理 PDF"，非 arxiv / 离线 PDF 适用）
+# 无 arxiv id → 公式走 LLM 兜底、figure 走视觉分析；与上述入口五选一互斥
+python src/main.py \
+    --pdf ./cache/report.pdf \
+    --manim --manim-tts --output_language zh \
+    --target_duration 300 --platforms none
 
 # --discover 自动选题（HF Daily Papers + arxiv recent + opencode 排序）
 # 与 --paper-link / --filename 严格三选一互斥

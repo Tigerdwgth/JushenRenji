@@ -1330,7 +1330,7 @@ class ManimEngine:
         anim_scene_idxs = [j for j, s in enumerate(scene_defs)
                            if s.get("type") == "js_anim"]
         if anim_scene_idxs:
-            from src.js_anim_engine import _opencode_generate_html, render_html_to_mp4
+            from src.js_anim_engine import _opencode_generate_html, _opencode_generate_html_with_retry, render_html_to_mp4
             anim_mp4_by_idx = {}   # 旧 idx -> mp4 路径（仅成功的）
             dropped_idxs = set()   # 旧 idx，渲染失败被丢弃
             for j in anim_scene_idxs:
@@ -1351,7 +1351,8 @@ class ManimEngine:
                     f"kind: {kind}\n"
                 )
                 full_prompt = prompts_dict["js_anim_generate"] + "\n\n" + user_content
-                html = _opencode_generate_html(full_prompt, sname, self.temp_dir)
+                html = _opencode_generate_html_with_retry(
+                    full_prompt, sname, self.temp_dir, attempts=3)
                 if not html:
                     logger.warning("[anim] scene %d (%s) HTML 生成失败，降级丢弃", j, sname)
                     dropped_idxs.add(j)

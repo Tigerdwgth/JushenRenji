@@ -23,6 +23,7 @@ if SRC not in sys.path:
 
 from src.js_anim_engine import (
     _opencode_generate_html,
+    _opencode_generate_html_with_retry,
     render_html_to_mp4,
     _find_chromium_executable,
 )
@@ -246,3 +247,76 @@ def test_generate_then_render_end_to_end(tmp_path):
     expected = total / fps  # 48/24 = 2.0s
     assert abs(dur - expected) <= 0.2, \
         f"时长应 ≈ TOTAL_FRAMES/FPS = {expected:.2f}s, 实际 {dur:.3f}s"
+
+
+def _make_seq_run(temp_dir, scene_name, behaviors):
+    """构造按调用次序变化的 fake subprocess.run。
+
+    behaviors: list, 每项 (html_content_or_None, returncode, stdout)。
+    第 k 次调用用 behaviors[k]; 调用数超出则复用最后一项。
+    html_content=None 表示本次不写 <scene>.html(模拟 opencode silent abort)。
+    """
+    state = {"n": 0}
+
+    def _fake_run(cmd, **kwargs):
+        idx = min(state["n"], len(behaviors) - 1)
+        state["n"] += 1
+        html_content, rc, stdout = behaviors[idx]
+        if html_content is not None:
+            with open(os.path.join(temp_dir, f"{scene_name}.html"), "w",
+                      encoding="utf-8") as f:
+                f.write(html_content)
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=rc, stdout=stdout, stderr="",
+        )
+
+    return _fake_run
+
+
+# opencode silent abort 的真实形态: returncode=0 但 stdout 只有 banner / 为空。
+_SILENT_BANNER = "\n> build \u00b7 deepseek-v4-pro\n\n"
+
+
+def test_retry_recovers_after_silent_aborts(tmp_path):
+    """前 2 次 silent abort(banner-only, 不写文件)、第 3 次写合法 HTML:
+    _opencode_generate_html_with_retry 应重试到第 3 次成功, 返回存在的 .html 路径。"""
+    temp_dir = str(tmp_path)
+    scene = "RetryRecoverScene"
+    good = _HTML_TEMPLATE.format(total=48, fps=24)
+    behaviors = [
+        (None, 0, _SILENT_BANNER),  # 第1次 silent abort
+        (None, 0, ""),              # 第2次 silent abort(stdout 全空)
+        (good, 0, ""),              # 第3次 opencode Write 落盘合法 HTML
+    ]
+    with mock.patch("time.sleep", lambda *a, **k: None), \
+         mock.patch("subprocess.run",
+                    side_effect=_make_seq_run(temp_dir, scene, behaviors)):
+        ret = _opencode_generate_html_with_retry(
+            "prompt", scene, temp_dir, attempts=3, retry_sleep=0,
+        )
+    assert ret is not None, "前2次 silent abort 后第3次应重试成功"
+    assert os.path.exists(ret), f"应返回存在的 .html 路径, 实际 {ret!r}"
+    assert ret == os.path.join(temp_dir, f"{scene}.html")
+    content = open(ret, "r", encoding="utf-8").read()
+    assert "renderFrame" in content and "TOTAL_FRAMES" in content
+
+
+def test_retry_gives_up_all_silent_aborts(tmp_path):
+    """3 次全 silent abort(banner-only / 空, 不写文件):
+    _opencode_generate_html_with_retry 应返回 None(降级丢弃, 不抛)。"""
+    temp_dir = str(tmp_path)
+    scene = "RetryGiveupScene"
+    behaviors = [
+        (None, 0, _SILENT_BANNER),
+        (None, 0, _SILENT_BANNER),
+        (None, 0, _SILENT_BANNER),
+    ]
+    with mock.patch("time.sleep", lambda *a, **k: None), \
+         mock.patch("subprocess.run",
+                    side_effect=_make_seq_run(temp_dir, scene, behaviors)):
+        ret = _opencode_generate_html_with_retry(
+            "prompt", scene, temp_dir, attempts=3, retry_sleep=0,
+        )
+    assert ret is None, "3 次全 silent abort 应降级返回 None"
+    assert not os.path.exists(os.path.join(temp_dir, f"{scene}.html")), \
+        "全部失败不应残留产物文件"

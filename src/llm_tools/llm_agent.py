@@ -338,7 +338,7 @@ def _fetch_tex_source(arxiv_id):
     if not arxiv_id:
         return None
     aid = str(arxiv_id).strip()
-    if not aid or aid.startswith("blog-"):
+    if not aid or aid.startswith("blog-") or aid.startswith("local-"):
         return None
     try:
         import tempfile
