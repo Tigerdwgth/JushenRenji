@@ -587,6 +587,83 @@ class ManimEngine:
     # Manim 代码生成
     # ------------------------------------------------------------------
 
+    # 架构图注入元素上限: 一个 720p 画面塞得下的核心模块/文字数量上限。
+    # 原始图分析常给出 100+ 组件 (BFM-Zero 实测 147 个), 全塞进画面必然重叠。
+    # 注入前按 bbox 面积 (越大越是主干结构) 取前 N 个, 元素少了自然不挤。
+    ARCH_MAX_ELEMENTS = 20
+
+    def _trim_architecture_elements(self, figure_analysis, manim_ctx, eb_elements, n_total):
+        """架构图防重叠治本: 把注入给 opencode 的元素裁剪到核心 ARCH_MAX_ELEMENTS 个。
+
+        通过裁剪结构化 analysis.components (按 bbox 面积降序保留主干大块),
+        再用项目已有的 analysis_to_manim_context / to_eb_elements 重新渲染两段文本,
+        保证格式与未裁剪路径完全一致。无法裁剪 (无结构化数据) 时原样返回。
+
+        Returns: (manim_ctx, eb_elements, n_kept, n_total)
+        """
+        limit = self.ARCH_MAX_ELEMENTS
+        if n_total <= limit:
+            return manim_ctx, eb_elements, n_total, n_total
+
+        analysis = (figure_analysis or {}).get("analysis") or {}
+        comps = analysis.get("components") or []
+        if not comps:
+            # 无结构化组件可裁 (理论上不会发生), 原样返回避免破坏格式
+            return manim_ctx, eb_elements, n_total, n_total
+
+        def _area(c):
+            bb = c.get("bbox_normalized") or [0, 0, 1, 1]
+            try:
+                return max(0.0, (bb[2] - bb[0])) * max(0.0, (bb[3] - bb[1]))
+            except Exception:
+                return 0.0
+
+        kept = sorted(comps, key=_area, reverse=True)[:limit]
+        kept_names = {id(c) for c in kept}
+        # 保持原始绘制顺序 (数据流方向) 仅过滤掉被裁掉的小元素
+        kept_ordered = [c for c in comps if id(c) in kept_names]
+
+        trimmed = dict(analysis)
+        trimmed["components"] = kept_ordered
+        # 连接里只保留两端都还在的箭头, 避免指向被裁元素的悬空箭头
+        kept_labels = set()
+        for c in kept_ordered:
+            for k in ("name", "chinese_name", "id"):
+                v = c.get(k)
+                if v:
+                    kept_labels.add(str(v))
+        conns = analysis.get("connections") or []
+        if conns:
+            trimmed["connections"] = [
+                cn for cn in conns
+                if (str(cn.get("from", "")) in kept_labels or not cn.get("from"))
+                and (str(cn.get("to", "")) in kept_labels or not cn.get("to"))
+            ]
+
+        new_ctx, new_eb = manim_ctx, eb_elements
+        try:
+            from src.figure_analyzer import analysis_to_manim_context as _a2c
+        except ImportError:
+            from figure_analyzer import analysis_to_manim_context as _a2c  # type: ignore
+        try:
+            if manim_ctx:
+                new_ctx = _a2c(trimmed, has_precise_bbox=bool(eb_elements))
+        except Exception as _e:
+            logger.warning("[arch-trim] 重渲染 manim_context 失败, 用原文: %s", _e)
+        try:
+            if eb_elements:
+                try:
+                    from src.arxiv_source_analyzer import to_eb_elements as _t2e
+                except ImportError:
+                    from arxiv_source_analyzer import to_eb_elements as _t2e  # type: ignore
+                new_eb = _t2e(trimmed)
+        except Exception as _e:
+            logger.warning("[arch-trim] 重渲染 eb_manim_elements 失败, 用原文: %s", _e)
+
+        logger.info("[arch-trim] 架构图元素 %d → %d (按 bbox 面积保留主干, 上限 %d)",
+                    n_total, len(kept_ordered), limit)
+        return new_ctx, new_eb, len(kept_ordered), n_total
+
     def generate_manim_code(self, scene_info):
         """根据场景信息调用 LLM 生成 ManimCE 代码。支持图像分析增强。
 
@@ -618,19 +695,25 @@ class ManimEngine:
 
         # 注入图像分析上下文
         if figure_analysis:
-            manim_ctx = figure_analysis.get("manim_context", "")
+            # 架构图防重叠治本: 注入前把元素裁剪到核心 N 个 (≤ ARCH_MAX_ELEMENTS),
+            # 否则 107~147 个组件全塞进 720p 画面必然挤成一团 (BFM-Zero 实测)。
+            manim_ctx, eb_elements, _n_kept, _n_total = self._trim_architecture_elements(
+                figure_analysis,
+                figure_analysis.get("manim_context", ""),
+                figure_analysis.get("eb_manim_elements", ""),
+                len(figure_analysis.get("analysis", {}).get("components", [])),
+            )
             if manim_ctx:
                 user_content += f"\n{manim_ctx}\n"
             # 注入 Edit Banana 精确元素数据（包含 Manim 坐标）
-            eb_elements = figure_analysis.get("eb_manim_elements", "")
             if eb_elements:
                 user_content += f"\n## 论文方法图精确元素数据（SAM3 分割，坐标已转为 Manim 坐标系）\n"
                 user_content += f"## 请严格按照这些坐标和颜色生成 Manim 代码！\n"
                 user_content += eb_elements + "\n"
                 logger.info("已注入 EB 精确元素数据 (%d 字符)", len(eb_elements))
-            logger.info("已注入图像分析上下文 (类型: %s, %d 个组件)",
+            logger.info("已注入图像分析上下文 (类型: %s, 原始 %d 组件 → 注入 %d 个核心元素)",
                        figure_analysis.get("figure_type", "unknown"),
-                       len(figure_analysis.get("analysis", {}).get("components", [])))
+                       _n_total, _n_kept)
 
         if not figure_analysis:
             # 论文全文不再嵌入 prompt（避免 ARG_MAX 超限 + 节省上下文 token）
@@ -643,6 +726,18 @@ class ManimEngine:
         user_content += "\n重要：生成的动画内容必须忠实于这篇论文的具体方法，不要用通用的示例。\n"
 
         full_prompt = prompt + "\n\n" + user_content
+
+        # 持久日志: 把每次喂给 opencode 的完整输入 (prompt + user_content) 落盘,
+        # 以后任何 scene 出问题 (重叠/不忠实/语法炸) 都能回看它当时拿到的全部输入。
+        try:
+            os.makedirs(self.temp_dir, exist_ok=True)
+            _in_path = os.path.join(self.temp_dir, f"{sname}_opencode_input.txt")
+            with open(_in_path, "w", encoding="utf-8") as _inf:
+                _inf.write(full_prompt)
+            logger.info("[opencode-input] %s: %d 字 → temp/%s_opencode_input.txt",
+                        sname, len(full_prompt), sname)
+        except Exception as _e_in:
+            logger.warning("[opencode-input] 写入失败 (%s): %s", sname, _e_in)
 
         # 所有场景统一走 opencode（禁止直连 API 生成 manim 代码）
         logger.info("使用 opencode 生成代码 (prompt_key=%s)...", prompt_key)
