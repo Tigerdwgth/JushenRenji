@@ -153,3 +153,22 @@ unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY
 ```
 
 服务器可以直接访问 arXiv，设置代理反而会导致 `ConnectionResetError`。
+
+## 抖音补传 / 重新登录（douyin republish）
+
+抖音 cookie: `cache/douyin_cookies.json`（含 sessionid_ss/sessionid/sid_guard）。**抖音对服务器自动登录风控极严**（CDP 自动填手机号/点「获取验证码」完全无效、不发短信），cookie 过期才需重登。
+
+**① 重新登录（仅 cookie 失效时，要人工）**
+- 起持久 daemon：`python -m src.chromium_daemon`（自动起 Xvfb :99 + CDP 9222，登录后自动写 cookie）。Xvfb 必须 `setsid Xvfb :99 ...` 持久化，`DISPLAY=:99 xdpyinfo` 验证（pgrep 会假阳性）。
+- chromium 缺版本报 `Executable doesn't exist .../chromium-1223` → `HTTPS_PROXY=http://127.0.0.1:7890 patchright install chromium`（下载走 clash，登录/上传走直连）。
+- 开 VNC：`x11vnc -storepasswd <pw> ~/.vnc/passwd` + `setsid x11vnc -display :99 -rfbport 5900 -rfbauth ~/.vnc/passwd -forever -shared -bg`。
+- 帮用户开远程桌面（密码嵌 URL）：`ssh macair 'open "vnc://:<pw>@100.86.193.52:5900"'` → **用户在真桌面里人工登录**（真人操作不吃风控，发码/扫码均可）→ daemon 自动写 cookie。登完 `pkill x11vnc`。
+
+**② 补传上传（cookie 有效时，几分钟，无需重登）**
+- `DISPLAY=:99 JSR_USE_CDP_DAEMON=1 NO_PROXY=douyin.com python tmp/dy_republish.py --base "<output 文件名不含扩展名>" --tags "逗号分隔标签"`
+- **必须 `JSR_USE_CDP_DAEMON=1`** 复用登录好的 daemon，否则默认 launch 新浏览器会 `goto content/upload load 超时`。
+- daemon 没在跑就先按 ① 起 daemon（cookie 有效会直接 ready，不用 VNC）。
+
+**③ 判定成功看作品管理列表，别信脚本返回**：SAU 常报「等待发布跳转超时 / UPLOAD_RESULT: None」**假失败**，实际已发布。用 `python tmp/dy_manage_shot.py` 截图 + present 检测确认作品管理置顶（状态「审核中」正常）。卡话题标签点击时用 `tmp/douyin_publish_step.py` 收尾（AI声明+发布）。
+
+> 完整排错过程见 `LESSONS_LEARNED.md`「抖音补传完整流程」节。账号绑定手机 18500252035。
